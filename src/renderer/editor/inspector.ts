@@ -1283,6 +1283,13 @@ export class Inspector {
     ));
 
     wrap.appendChild(mixedCheckboxField(
+      'Size box to text',
+      commonValue(texts.map((text) => Boolean(text.autoSize))),
+      (on) => this.store.updateSelected((element) => {
+        if (element.type === 'text') setTextAutoSize(element, on);
+      }, { label: on ? 'Size box to text' : 'Stop sizing box to text' }),
+    ));
+    wrap.appendChild(mixedCheckboxField(
       'Auto-fit text to box',
       commonValue(texts.map((text) => Boolean(text.autoFit))),
       (on) => this.store.updateSelected((element) => {
@@ -1655,6 +1662,11 @@ export class Inspector {
           layout.caption.title =
             'Table rows automatically fit their contents. Drag the outer handles or blue column dividers to resize.';
         } else {
+          layout.content.appendChild(checkboxField('Size box to text', Boolean(el.autoSize), (on) =>
+            this.store.updateSelected((target) => {
+              if (target.type === 'text') setTextAutoSize(target, on);
+            }, { label: on ? 'Size box to text' : 'Stop sizing box to text' }),
+          ));
           layout.content.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
             this.store.updateSelected((target) => {
               if (target.type === 'text') {
@@ -2689,6 +2701,19 @@ function clearLegacyMediaBorder(
     if (isMediaBorderPaint(property)) delete style[property];
   }
   element.style = style;
+}
+
+/**
+ * A box sized to its text hugs it, so shrinking the text to fit the box has
+ * nothing to do; turning the one on turns the other off.
+ */
+function setTextAutoSize(element: Extract<SlideElement, { type: 'text' }>, on: boolean): void {
+  if (on) {
+    element.autoSize = true;
+    element.autoFit = false;
+  } else {
+    delete element.autoSize;
+  }
 }
 
 function editableTextNoWrap(element: Extract<SlideElement, { type: 'text' }>): boolean {
