@@ -28,7 +28,7 @@ import { applyOpsLenient } from '@shared/collabApply.js';
 import { parseDeck, type Deck, type Slide } from '@shared/deck.js';
 import { diffDecks } from '@shared/deckDiff.js';
 import { renameRetiredFields } from '@shared/fieldAliases.js';
-import { adoptAuthoredIds, describeHtmlSync } from '@shared/htmlSlides.js';
+import { adoptAuthoredIds, describeHtmlSync, stampPage, type PageStamp } from '@shared/htmlSlides.js';
 import { SPEAKER_NOTES_FILE, applySpeakerNotes, serializeSpeakerNotes } from '@shared/speakerNotes.js';
 import { AGENT_GUIDE_FILE, AGENT_GUIDE_MARKER, renderAgentGuide } from '../main/agentGuide.js';
 import { agentRuntimePaths, atomicJson, deckRevision } from '../main/agentRuntime.js';
@@ -155,6 +155,7 @@ interface SyncResponse {
   slides?: Array<{ id: string; elements: Array<{ id: string; type: string; box: unknown }> }>;
   overflows?: unknown[];
   warnings?: string[];
+  stamp?: PageStamp;
   error?: string;
   message?: string;
 }
@@ -600,8 +601,7 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
     });
     if (!response.ok) {
       knownAssets.delete(fileName);
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      report(`could not upload assets/${fileName}: ${body.error ?? response.status}`, { error: true });
+      report(`could not upload assets/${fileName} (${response.status}): ${errorText(await responseBody(response))}`, { error: true });
       return;
     }
     report(`uploaded assets/${fileName}`);
@@ -671,10 +671,15 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
         headers: { ...BRIDGE_HEADERS, 'content-type': 'text/html; charset=utf-8' },
         body: authored,
       });
-      const body = await response.json().catch(() => ({})) as SyncResponse;
+      const body = await responseBody(response) as SyncResponse;
       result = response.ok
         ? { ...body, status: 'applied' }
-        : { status: response.status === 409 ? 'conflict' : 'error', error: body.error ?? `sync failed (${response.status})` };
+        : {
+          status: response.status === 409 ? 'conflict' : 'error',
+          // A 4xx is about the page and says so; a 5xx is the server's own
+          // failure, and the status is part of what the admin needs to know.
+          error: response.status >= 500 ? `sync failed (${response.status}): ${errorText(body)}` : errorText(body),
+        };
     } catch (error) {
       result = { status: 'error', error: message(error) };
     }
@@ -688,14 +693,17 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
       : `${file}: no change`);
     // Stamp the assigned ids back so the next save replaces rather than
     // inserts — unless the author saved again meanwhile.
+    // The fingerprints too: the next save is compared with what the deck
+    // holds now, not with what the page was first exported from.
     let stamped = authored;
     const current = await readFile(path, 'utf8').catch(() => null);
     if (current === authored && result.slides) {
-      const adopted = adoptAuthoredIds(authored, result.slides as unknown as Slide[]);
-      if (adopted) {
-        stamped = adopted;
-        lastWrittenHtml.set(path, adopted);
-        await writeFile(path, adopted, 'utf8');
+      const adopted = adoptAuthoredIds(authored, result.slides as unknown as Slide[]) ?? authored;
+      const based = result.stamp ? stampPage(adopted, result.stamp) : adopted;
+      if (based !== authored) {
+        stamped = based;
+        lastWrittenHtml.set(path, based);
+        await writeFile(path, based, 'utf8');
       }
     }
     lastSync.set(path, { contents: stamped, result });
@@ -847,6 +855,7 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
           startWatchers();
           await drainInbox();
           markReady();
+          void checkServerHealth();
         }
         log(`connected to ${target.origin} as ${msg.self.name}`);
         return;
@@ -907,6 +916,27 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
         await writeGuides();
         return;
       }
+    }
+  }
+
+  /**
+   * Ask the server, once, whether it can compile pages at all. A server whose
+   * headless browser cannot start serves the deck and the session perfectly
+   * well, so without this the first sign of it was a failed save.
+   */
+  async function checkServerHealth(): Promise<void> {
+    try {
+      const response = await fetchImpl(apiUrl('/api/agent-mirror/health'), { headers: BRIDGE_HEADERS });
+      // An older server has no such route; its saves will say for themselves.
+      if (!response.ok) return;
+      const { browser } = await response.json() as { browser?: { ok: boolean; error?: string } };
+      if (browser && !browser.ok) {
+        report('warning: this server cannot compile or render pages right now, so saving a page in edit/ '
+          + `will fail until whoever runs it fixes this: ${browser.error ?? 'its headless browser does not start'}`,
+        { error: true });
+      }
+    } catch {
+      // Best effort: a dropped connection is reported by the session itself.
     }
   }
 
@@ -1047,6 +1077,7 @@ there is no separate upload. To choose where a new slide goes, run apply right
 after you write the page:
 
     ./deck apply . --html edit/slide.html --after 8    # insert after slide 8
+    ./deck apply . --html edit/slide.html --after 0    # insert as the first slide
 
 Each sync stamps \`data-slide-id\` into your file, and saving it again replaces
 that slide. So never copy a page to start another: the copy carries the same
@@ -1150,4 +1181,31 @@ function sanitize(fileName: string): string {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A response's body: parsed JSON when it is JSON, its text otherwise. */
+async function responseBody(response: Response): Promise<unknown> {
+  const text = await response.text().catch(() => '');
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * The server's own explanation of a failure, whatever shape it came in.
+ *
+ * API errors are `{ error }`, but a proxy, a crash handler or an older server
+ * answers in plain text — and parsing only JSON turned all of those into a
+ * bare status code, the one thing nobody can act on.
+ */
+function errorText(body: unknown): string {
+  if (body && typeof body === 'object') {
+    const { error, message: text } = body as { error?: unknown; message?: unknown };
+    if (typeof error === 'string' && error) return error;
+    if (typeof text === 'string' && text) return text;
+  }
+  const raw = typeof body === 'string' ? body.trim() : '';
+  return raw ? raw.slice(0, 600) : 'no explanation from the server';
 }

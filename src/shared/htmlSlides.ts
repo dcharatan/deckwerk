@@ -1,11 +1,11 @@
 import type { AgentOperation } from './agent.js';
-import { MediaEffectSchema, MIRRORED_TEXT_STYLE_PROPERTIES } from './deck.js';
+import { MediaEffectSchema, MIRRORED_TEXT_STYLE_PROPERTIES, SlideSchema } from './deck.js';
 import type { Deck, MediaEffect, Slide, SlideElement, TimelineEntry } from './deck.js';
 import { fitAutoTextElement } from './autoFit.js';
 import { KATEX_AUTO_RENDER_JS, KATEX_CSS, KATEX_JS } from './katexInline.js';
 import { shapeSvg } from './shapeSvg.js';
 import { applyTableColumnWidths } from './paragraphs.js';
-import { layoutMaster, syncSlideWithLayoutMaster, type FixedLayout } from './layoutMasters.js';
+import { layoutMaster, placeNewPlaceholders, syncSlideWithLayoutMaster, type FixedLayout } from './layoutMasters.js';
 import {
   cssMediaBorder,
   cssMediaRadius,
@@ -60,6 +60,8 @@ export interface MeasuredNode {
   };
   /** Set by the walker when a node must be preserved as raw markup. */
   verbatim?: boolean;
+  /** `html` is a deck text box's own markup, read from inside the player's wrapper. */
+  preformatted?: boolean;
   /** Captured author CSS for an isolated fallback region. */
   css?: string;
   fallbackReason?: string;
@@ -76,6 +78,9 @@ export interface MeasuredSlide {
   layout?: string;
   /** With `layout`: the section set its own background inline. */
   ownBackground?: boolean;
+  /** `data-base` / `data-base-ids`: what the export recorded (`pageStampOf`). */
+  base?: string;
+  baseIds?: string;
   nodes: MeasuredNode[];
   /**
    * Inline style the browser silently refused: a segment with no colon, or a
@@ -290,12 +295,28 @@ export function renderAuthoredMath(
     throwOnError: false,
     strict: 'ignore',
   });
+  // An escaped dollar shows as a dollar, but stays recognisably escaped: the
+  // compile reads this page back into the deck, where a bare `$` would be
+  // taken for a delimiter the next time anything renders it.
+  const escaped: Text[] = [];
   const restore = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
   while (restore.nextNode()) {
     const text = restore.currentNode as Text;
-    if (text.data.includes(escapedDollar)) {
-      text.data = text.data.replaceAll(escapedDollar, '$');
-    }
+    if (text.data.includes(escapedDollar)) escaped.push(text);
+  }
+  for (const text of escaped) {
+    const parts = text.data.split(escapedDollar);
+    const pieces: Node[] = [];
+    parts.forEach((part, index) => {
+      if (index > 0) {
+        const dollar = doc.createElement('span');
+        dollar.setAttribute('data-deckwerk-escaped-dollar', '');
+        dollar.textContent = '$';
+        pieces.push(dollar);
+      }
+      if (part) pieces.push(doc.createTextNode(part));
+    });
+    text.replaceWith(...pieces);
   }
 }
 
@@ -377,6 +398,11 @@ export function authoringCss(canvas: { w: number; h: number }): string {
      player uses the same model. Keep exported native objects on that model so
      preserving padding or borders does not make them grow on the next render. */
   [data-element-id] { box-sizing: border-box; }
+  /* A deck object's box is its geometry: a margin a theme class gives it
+     would place it somewhere its numbers do not say, and the next save would
+     store that place and the player add the margin again — drifting the
+     object by the margin on every round trip. The player resets it too. */
+  [data-element-id] { margin: 0 !important; }
   /* Sensible defaults so bare markup does not arrive with browser margins
      baked into its measured geometry. */
   h1, h2, h3, h4, h5, h6, p, ul, ol, figure, blockquote { margin: 0; }
@@ -473,6 +499,23 @@ export function adoptAuthoredIds(html: string, slides: Slide[]): string | null {
 }
 
 /**
+ * Where `apply --after <ref>` puts new slides: after the slide the ref names —
+ * its id or its 1-based number — or, for `0`, before the first slide (null,
+ * the transaction's "at the start"). Undefined when the ref names no slide.
+ *
+ * Numbers are how people name slides, so "after slide 0" is the natural way to
+ * ask for a new opening slide; without it an agent asked for one had to insert
+ * after slide 1 and then swap the two by hand.
+ */
+export function insertionAnchor(deck: Deck, ref: string): string | null | undefined {
+  // An exact id wins: an imported deck may carry an id that is all digits.
+  if (deck.slides.some((slide) => slide.id === ref)) return ref;
+  if (!/^\d+$/.test(ref)) return undefined;
+  const number = Number(ref);
+  return number === 0 ? null : deck.slides[number - 1]?.id;
+}
+
+/**
  * Build the ordinary transaction that makes an exported HTML scope authoritative.
  * Files without a scope marker retain replace-or-append behaviour, so older
  * exports and hand-authored snippets remain valid.
@@ -482,6 +525,8 @@ export function htmlSyncOperations(
   slides: Slide[],
   scope: string[] | null,
   after: string | null,
+  /** What the page's slides were when it was exported (`pageBases`), if it says. */
+  bases: Map<string, SlideBase> = new Map(),
 ): AgentOperation[] {
   const existingIds = new Set(deck.slides.map((slide) => slide.id));
   const authoredIds = slides.map((slide) => slide.id);
@@ -496,11 +541,21 @@ export function htmlSyncOperations(
       + ' attribute — a section without one is inserted, not a replacement.');
   }
 
+  // A slide the file replaces keeps what its markup cannot say, and one that
+  // comes back saying nothing new is not replaced at all: re-saving an export
+  // untouched must not land a change in everyone's History.
+  const previousSlides = new Map(deck.slides.map((slide) => [slide.id, slide]));
+  const replace = (slide: Slide, into: AgentOperation[]): void => {
+    const previous = previousSlides.get(slide.id)!;
+    const next = carrySlideState(previous, slide, bases.get(slide.id));
+    if (!sameSlideContent(previous, next)) into.push({ op: 'replaceSlide', slideId: slide.id, slide: next });
+  };
+
   if (scope === null) {
     const operations: AgentOperation[] = [];
     const inserted: Slide[] = [];
     for (const slide of slides) {
-      if (existingIds.has(slide.id)) operations.push({ op: 'replaceSlide', slideId: slide.id, slide });
+      if (existingIds.has(slide.id)) replace(slide, operations);
       else inserted.push(slide);
     }
     if (inserted.length > 0) operations.push({ op: 'insertSlides', afterSlideId: after, slides: inserted });
@@ -509,7 +564,14 @@ export function htmlSyncOperations(
 
   if (new Set(scope).size !== scope.length) throw new Error('HTML scope contains duplicate slide ids');
   const unknownScope = scope.find((id) => !existingIds.has(id));
-  if (unknownScope) throw new Error(`HTML scope names unknown slide id: ${unknownScope}`);
+  if (unknownScope) {
+    // In a shared deck this is ordinary: somebody deleted a slide this page
+    // was exported with. Saving the page cannot say whether that slide should
+    // come back, so it is refused — with what to do instead.
+    throw new Error(`This page was exported with slide ${unknownScope}, which is no longer in the deck`
+      + ' (it was deleted since). Export the slides again with inspect --html and redo the edit there;'
+      + ' to bring the slide back, add its section to a new page without a data-slide-id.');
+  }
 
   // What the file governs is what it was exported with *plus* whatever it has
   // since created. Without that second half the loop only works once: a save
@@ -531,7 +593,7 @@ export function htmlSyncOperations(
 
   const operations: AgentOperation[] = [];
   for (const slide of slides) {
-    if (existingIds.has(slide.id)) operations.push({ op: 'replaceSlide', slideId: slide.id, slide });
+    if (existingIds.has(slide.id)) replace(slide, operations);
   }
 
   const inserted = slides.filter((slide) => !existingIds.has(slide.id));
@@ -557,6 +619,422 @@ export function htmlSyncOperations(
     }));
   }
   return operations;
+}
+
+/**
+ * A compiled slide, completed with what its authoring page cannot say.
+ *
+ * A page carries geometry, text, media and appear builds. A slide also holds
+ * things that have no markup at all: its speaker notes, whether it is skipped,
+ * the comments people left on it and on its objects, and builds that are not
+ * appearances (a video that plays on a click, a disappear, a class toggle).
+ * Replacing the slide with the page as compiled deleted every one of them —
+ * an agent tidying a slide's wording un-skipped it, wiped its notes and closed
+ * its review threads. Whatever the page cannot express comes from the slide it
+ * replaces.
+ */
+export function carrySlideState(previous: Slide, compiled: Slide, base?: SlideBase): Slide {
+  // Somebody else changed this slide after the page was exported: merge
+  // object by object rather than let the page's stale copy undo their work.
+  const concurrent = base !== undefined && slideBase(previous).slide !== base.slide
+    ? mergedWithConcurrentEdits(previous, compiled, base)
+    : null;
+  const next = structuredClone(concurrent?.slide ?? compiled);
+  if (!next.notes && previous.notes) next.notes = previous.notes;
+  if (next.skipped === undefined && previous.skipped !== undefined) next.skipped = previous.skipped;
+  if (!next.comments?.length && previous.comments?.length) next.comments = structuredClone(previous.comments);
+  // A page can say "true" but never an explicit "false": an absent attribute
+  // and a stored `false` mean the same, and the stored form is the deck's.
+  if (next.morphFromPrevious === undefined && previous.morphFromPrevious === false) next.morphFromPrevious = false;
+  if (next.layoutBackgroundInherited === undefined && previous.layoutBackgroundInherited !== undefined
+    && next.layout === previous.layout) {
+    next.layoutBackgroundInherited = previous.layoutBackgroundInherited;
+  }
+  next.elements = reconciledElements(previous, next.elements);
+  next.timeline = mergedTimeline(previous, next, concurrent?.theirBuilds);
+  return next;
+}
+
+/**
+ * A page saved over a slide somebody changed since it was exported.
+ *
+ * Replacing the slide with the page undid their work wholesale: a person
+ * rewords a heading while their agent tightens the body from an export a
+ * minute old, the agent saves, and the heading is back as it was. The export
+ * recorded what each object was (`slideBase`), so the save can tell who
+ * changed what: an object the page left as exported but somebody changed
+ * since keeps their version; one the page changed takes the page's, theirs
+ * or not (the later edit wins, as anywhere in a session); one deleted since
+ * stays deleted; one added since stays; one the page removed goes. The
+ * slide's own properties merge the same way.
+ */
+function mergedWithConcurrentEdits(
+  current: Slide,
+  page: Slide,
+  base: SlideBase,
+): { slide: Slide; theirBuilds: Set<string> } {
+  const theirs = new Map(current.elements.map((element) => [element.id, element]));
+  const onPage = new Set(page.elements.map((element) => element.id));
+  const exported = new Set(base.ids);
+  const theirBuilds = new Set<string>();
+  const elements: SlideElement[] = [];
+  for (const element of page.elements) {
+    const was = base.elements.get(element.id);
+    const now = theirs.get(element.id);
+    if (was && !now) continue;
+    // Left as exported here, changed by somebody since: theirs stands.
+    if (was && now && matchesBase(page, element, was) && !matchesBase(current, now, was)) {
+      elements.push(structuredClone(now));
+      theirBuilds.add(now.id);
+      continue;
+    }
+    elements.push(element);
+  }
+  for (const element of current.elements) {
+    if (onPage.has(element.id) || exported.has(element.id)) continue;
+    elements.push(structuredClone(element));
+    theirBuilds.add(element.id);
+  }
+  const slide: Slide = { ...page, elements };
+  if (propsFingerprint(current) !== base.props && propsFingerprint(page) === base.props) {
+    for (const key of SLIDE_PROPS) {
+      if (current[key] === undefined) delete slide[key];
+      else (slide as Record<string, unknown>)[key] = structuredClone(current[key]);
+    }
+  }
+  return { slide, theirBuilds };
+}
+
+/** Whether an object on `slide` is still what the export recorded. */
+function matchesBase(slide: Slide, element: SlideElement, base: ElementBase): boolean {
+  return elementFingerprint(element, buildSpec(slide, element.id)) === base.content
+    && (['x', 'y', 'w', 'h', 'rot'] as const).every((key, index) =>
+      Math.abs(element[key] - base.box[index]) <= GEOMETRY_TOLERANCE);
+}
+
+/**
+ * The page's objects, reconciled with the ones they were exported from.
+ *
+ * A browser measures in 1/64ths of a pixel, so a box at x 145.92 comes back
+ * at 145.91; a page cannot write an explicit `false`; an HTML region's
+ * captured stylesheet and a master decoration's link are not markup at all.
+ * None of that is an edit, yet each made an untouched object a "change", and
+ * every save rewrote every object on every slide it touched — the round trip
+ * drifting the deck a hundredth of a pixel at a time. So an object that comes
+ * back saying what it said is kept exactly as the deck holds it; one the
+ * author did change keeps what its markup cannot carry, and its measured
+ * edges snap back to where they were when they moved less than the browser
+ * can resolve.
+ */
+function reconciledElements(previous: Slide, compiled: SlideElement[]): SlideElement[] {
+  const before = new Map(previous.elements.map((element) => [element.id, element]));
+  const reconciled = compiled.map((element) => {
+    const old = before.get(element.id);
+    if (!old || old.type !== element.type) return element;
+    if (sameElement(old, element)) return { ...structuredClone(old), z: element.z };
+    const next: Record<string, unknown> = { ...element };
+    for (const key of ['x', 'y', 'w', 'h', 'rot'] as const) {
+      if (Math.abs(element[key] - old[key]) <= GEOMETRY_TOLERANCE) next[key] = old[key];
+    }
+    for (const [key, value] of Object.entries(old)) {
+      if ((value === false || value === null) && next[key] === undefined) next[key] = value;
+    }
+    if (old.comments?.length && !element.comments?.length) next.comments = structuredClone(old.comments);
+    if (old.layoutMasterId && !element.layoutMasterId) next.layoutMasterId = old.layoutMasterId;
+    // A region's captured stylesheet and whether it renders isolated are the
+    // deck object's, not its markup's: a legacy region came back sandboxed.
+    if (old.type === 'html' && element.type === 'html') {
+      next.css = old.css;
+      next.sandboxed = old.sandboxed;
+    }
+    return next as SlideElement;
+  });
+  // Paint order is the page's; the numbers are the deck's while the order holds.
+  const order = (elements: SlideElement[]) => elements
+    .map((element, index) => ({ element, index }))
+    .sort((a, b) => a.element.z - b.element.z || a.index - b.index)
+    .map(({ element }) => element.id);
+  const unchangedOrder = reconciled.length === previous.elements.length
+    && order(reconciled).join('\0') === order(previous.elements).join('\0');
+  return unchangedOrder
+    ? reconciled.map((element) => ({ ...element, z: before.get(element.id)!.z }))
+    : reconciled;
+}
+
+/** Less than a browser's 1/64 px layout unit, plus the compile's rounding to hundredths. */
+const GEOMETRY_TOLERANCE = 0.02;
+
+/**
+ * Whether a compiled object says what the deck's object says, as far as a
+ * page can. Set aside: its z (paint order is compared per slide), and what is
+ * never markup — its comments, a master decoration's link, an HTML region's
+ * captured stylesheet and isolation. Allowed: the measurement slack and the
+ * `false`-or-`null`-versus-absent equivalence above.
+ */
+function sameElement(old: SlideElement, compiled: SlideElement): boolean {
+  const ignored = new Set(['z', 'comments', 'layoutMasterId', ...(old.type === 'html' ? ['css', 'sandboxed'] : [])]);
+  const keys = new Set([...Object.keys(old), ...Object.keys(compiled)]);
+  for (const key of keys) {
+    if (ignored.has(key)) continue;
+    const a = (old as Record<string, unknown>)[key];
+    const b = (compiled as Record<string, unknown>)[key];
+    if (typeof a === 'number' && typeof b === 'number' && ['x', 'y', 'w', 'h', 'rot'].includes(key)) {
+      if (Math.abs(a - b) > GEOMETRY_TOLERANCE) return false;
+      continue;
+    }
+    // `false` and `null` are what a page cannot write; absent says the same.
+    if ((a === false || a === null) && b === undefined) continue;
+    if (a === undefined && (b === false || b === null)) continue;
+    if (sortedJson(a) !== sortedJson(b)) return false;
+  }
+  return true;
+}
+
+/** JSON with every object's keys in order: the order a record was written in says nothing. */
+function sortedJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, inner: unknown) => (
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : inner
+  ));
+}
+
+/**
+ * The replaced slide's builds, in their order, with the page deciding which
+ * objects appear and on what trigger.
+ *
+ * `data-build` says only "this object appears, on this trigger", and a page's
+ * document order is its paint order, not its build order. So the page is
+ * authoritative for *which* objects have an appear build and how it is
+ * triggered; the order of the steps, a by-paragraph reveal, and every entry
+ * that is not an appearance come from the slide being replaced, for objects
+ * still on it. Builds the page adds follow the existing ones, in document
+ * order.
+ */
+function mergedTimeline(previous: Slide, compiled: Slide, theirs = new Set<string>()): TimelineEntry[] {
+  const present = new Set(compiled.elements.map((element) => element.id));
+  const authored = new Map<string, TimelineEntry>();
+  for (const entry of compiled.timeline) {
+    // An object kept as somebody else left it keeps the builds they gave it.
+    if (theirs.has(entry.action.target)) continue;
+    if (entry.action.type === 'appear' && !authored.has(entry.action.target)) authored.set(entry.action.target, entry);
+  }
+  const claimed = new Set<string>();
+  const merged: TimelineEntry[] = [];
+  for (const entry of previous.timeline) {
+    const { target } = entry.action;
+    if (!present.has(target)) continue;
+    const page = entry.action.type === 'appear' ? authored.get(target) : undefined;
+    // The page took the build off this object.
+    if (entry.action.type === 'appear' && !page && !theirs.has(target)) continue;
+    if (page && !claimed.has(target)) {
+      claimed.add(target);
+      const kept = page.trigger.on === entry.trigger.on && entry.trigger.ref && present.has(entry.trigger.ref)
+        ? entry.trigger.ref : null;
+      merged.push({ ...structuredClone(entry), trigger: { ...page.trigger, ref: page.trigger.ref ?? kept } });
+      continue;
+    }
+    // Not something a page can state — another kind of step, or a second
+    // appearance of the same object — so it stands as it was, unless it
+    // waits on an object the page removed and so could never fire.
+    if (entry.trigger.ref && !present.has(entry.trigger.ref)) continue;
+    merged.push(structuredClone(entry));
+  }
+  const ids = new Set(merged.map((entry) => entry.id));
+  for (const entry of compiled.timeline) {
+    if (theirs.has(entry.action.target)) continue;
+    if (entry.action.type === 'appear' && claimed.has(entry.action.target)) continue;
+    merged.push({ ...entry, id: uniqueId(entry.id, ids) });
+  }
+  return merged;
+}
+
+/* --- what a page was exported from ---------------------------------------- */
+
+/** What an export recorded about one object: its content, and its box exactly. */
+export interface ElementBase {
+  content: string;
+  /** x, y, w, h, rot — compared with the measuring slack, never hashed. */
+  box: number[];
+}
+
+/**
+ * What an export recorded about one slide, so that a save can tell the edits
+ * its page makes from edits somebody else made meanwhile. Short fingerprints,
+ * written into the page as `data-base` attributes — not the slide itself,
+ * which would double the size of every export an agent reads.
+ */
+export interface SlideBase {
+  /** Everything a page can say about the slide. */
+  slide: string;
+  /** The slide's own properties (name, background, layout, Morph). */
+  props: string;
+  /** Every object the slide held. */
+  ids: string[];
+  elements: Map<string, ElementBase>;
+}
+
+const SLIDE_PROPS = ['name', 'background', 'layout', 'morphFromPrevious', 'morphDuration'] as const;
+
+export function slideBase(slide: Slide): SlideBase {
+  const elements = new Map(slide.elements.map((element) => [element.id, {
+    content: elementFingerprint(element, buildSpec(slide, element.id)),
+    box: [element.x, element.y, element.w, element.h, element.rot],
+  }]));
+  const props = propsFingerprint(slide);
+  const ranked = [...slide.elements]
+    .map((element, index) => ({ element, index }))
+    .sort((a, b) => a.element.z - b.element.z || a.index - b.index)
+    .map(({ element }) => `${element.id}:${elements.get(element.id)!.content}@${elements.get(element.id)!.box.join(',')}`);
+  return {
+    slide: fingerprint(`${props}|${ranked.join('|')}|${sortedJson(slide.timeline)}`),
+    props,
+    ids: slide.elements.map((element) => element.id),
+    elements,
+  };
+}
+
+function propsFingerprint(slide: Slide): string {
+  return fingerprint(sortedJson(Object.fromEntries(SLIDE_PROPS
+    .map((key) => [key, slide[key] === false ? undefined : slide[key]])))!);
+}
+
+/**
+ * An object's content as a page states it: not its box (compared with slack
+ * instead), z, comments or what its markup never carries; `false` and `null`
+ * as good as absent; and its appearance build, which the page states too.
+ */
+function elementFingerprint(element: SlideElement, build: string): string {
+  const form: Record<string, unknown> = { ...element, build };
+  for (const key of ['x', 'y', 'w', 'h', 'rot', 'z', 'comments', 'layoutMasterId', 'css', 'sandboxed']) delete form[key];
+  for (const [key, value] of Object.entries(form)) if (value === false || value === null) delete form[key];
+  return fingerprint(sortedJson(form)!);
+}
+
+/** An object's first appearance, as `data-build` states it. */
+function buildSpec(slide: Slide, elementId: string): string {
+  const entry = slide.timeline.find((candidate) => candidate.action.type === 'appear' && candidate.action.target === elementId);
+  return entry ? `${entry.trigger.on}+${entry.trigger.delay}@${entry.trigger.ref ?? ''}` : '';
+}
+
+/** cyrb53: a quick 53-bit string hash, the same in Node and in any browser. */
+function fingerprint(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** The `data-base` attributes an export writes, per slide and per object. */
+export interface PageStamp {
+  [slideId: string]: { slide: string; ids: string; elements: Record<string, string> };
+}
+
+export function pageStampOf(slides: Slide[]): PageStamp {
+  const stamp: PageStamp = {};
+  for (const slide of slides) {
+    const base = slideBase(slide);
+    stamp[slide.id] = {
+      slide: `${base.slide}.${base.props}`,
+      ids: JSON.stringify(base.ids),
+      elements: Object.fromEntries([...base.elements].map(([id, element]) =>
+        [id, `${element.content}@${element.box.join(',')}`])),
+    };
+  }
+  return stamp;
+}
+
+/** What a compiled page says its slides were when it was exported. */
+export function pageBases(measured: MeasuredSlide[]): Map<string, SlideBase> {
+  const bases = new Map<string, SlideBase>();
+  for (const slide of measured) {
+    const [whole, props] = (slide.base ?? '').split('.');
+    if (!slide.id || !whole || !props) continue;
+    let ids: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(slide.baseIds ?? '[]');
+      if (Array.isArray(parsed)) ids = parsed.filter((id): id is string => typeof id === 'string');
+    } catch {
+      continue;
+    }
+    const elements = new Map<string, ElementBase>();
+    for (const node of slide.nodes) {
+      const match = /^([^@]+)@(.+)$/.exec(node.dataset.base ?? '');
+      const box = match?.[2].split(',').map(Number);
+      if (!node.elementId || !match || !box || box.length !== 5 || box.some((value) => !Number.isFinite(value))) continue;
+      elements.set(node.elementId, { content: match[1], box });
+    }
+    bases.set(slide.id, { slide: whole, props, ids, elements });
+  }
+  return bases;
+}
+
+/**
+ * Bring a page's `data-base` attributes up to what the page itself now says
+ * (`pageStampOf` of its compiled slides).
+ *
+ * The next save of the same page must be compared with what this one said,
+ * not with the original export — or the agent's own earlier save reads as
+ * somebody else's edit. And not with the deck either: where this save kept a
+ * person's newer version of an object, the page still holds the old one, and
+ * stamped with theirs it would read as the agent's edit and undo it.
+ */
+export function stampPage(html: string, stamp: PageStamp): string {
+  const elementBases = new Map<string, string>();
+  for (const entry of Object.values(stamp)) {
+    for (const [id, base] of Object.entries(entry.elements)) elementBases.set(id, base);
+  }
+  const bodyAt = Math.max(0, html.search(/<body[\s>]/i));
+  const body = html.slice(bodyAt).replace(/<[a-zA-Z][^>]*>/g, (tag) => {
+    const slideId = attributeValue(tag, 'data-slide-id');
+    if (slideId !== null && /^<section\b/i.test(tag) && stamp[slideId]) {
+      return withAttribute(withAttribute(tag, 'data-base', stamp[slideId].slide), 'data-base-ids', stamp[slideId].ids);
+    }
+    const elementId = attributeValue(tag, 'data-element-id');
+    if (elementId !== null && elementBases.has(elementId)) return withAttribute(tag, 'data-base', elementBases.get(elementId)!);
+    return tag;
+  });
+  return html.slice(0, bodyAt) + body;
+}
+
+function attributeValue(tag: string, name: string): string | null {
+  const match = new RegExp(`\\s${name}\\s*=\\s*"([^"]*)"`, 'i').exec(tag);
+  return match ? decodeHtmlAttribute(match[1]) : null;
+}
+
+function withAttribute(tag: string, name: string, value: string): string {
+  const attribute = `${name}="${escape(value)}"`;
+  const existing = new RegExp(`\\s${name}\\s*=\\s*"[^"]*"`, 'i');
+  if (existing.test(tag)) return tag.replace(existing, () => ` ${attribute}`);
+  return tag.replace(/\s*(\/?)>$/, (_end, slash: string) => ` ${attribute}${slash ? ' /' : ''}>`);
+}
+
+/**
+ * Whether two versions of a slide say the same thing.
+ *
+ * Paint order is what z means, not the numbers: an export writes objects in z
+ * order and the compile numbers them 1, 2, 3…, so a slide whose objects sat at
+ * z 10 and 20 comes back at 1 and 2 having changed nothing. Comparing ranks —
+ * and ignoring the order keys happen to be written in — is what lets an
+ * untouched export re-sync as no change rather than a replacement.
+ */
+export function sameSlideContent(left: Slide, right: Slide): boolean {
+  return canonicalSlideJson(left) === canonicalSlideJson(right);
+}
+
+function canonicalSlideJson(slide: Slide): string {
+  const parsed = SlideSchema.parse(slide);
+  const elements = parsed.elements
+    .map((element, index) => ({ element, index }))
+    .sort((a, b) => a.element.z - b.element.z || a.index - b.index)
+    .map(({ element }, rank) => ({ ...element, z: rank + 1 }));
+  return sortedJson({ ...parsed, elements })!;
 }
 
 /**
@@ -669,16 +1147,31 @@ export function slidesFromMeasured(deck: Deck, measured: MeasuredSlide[]): Slide
     used.delete(existing.id);
     for (const element of existing.elements) used.delete(element.id);
   }
+  // Freed, but not free to mint: a new section earlier in the page than a
+  // slide it replaces was handed that slide's id, and the page then named one
+  // slide twice. Ids the page carries are reserved for the objects carrying them.
+  const reserved = new Set(measured.flatMap((slide) => [
+    ...(slide.id ? [slide.id] : []),
+    ...slide.nodes.flatMap((node) => (node.elementId ? [node.elementId] : [])),
+  ]));
 
   return measured.map((slide, index) => {
     const built = slideFromMeasured(slide, {
-      slideId: slide.id ?? nextSlideId(used, index),
+      slideId: slide.id ?? nextSlideId(used, index, reserved),
       usedIds: used,
+      reservedIds: reserved,
     });
     const layout = slide.layout;
     if (layout === undefined) return built;
     if (!FIXED_LAYOUTS.includes(layout as FixedLayout)) {
       throw new HtmlAuthoringError(`Unknown data-layout "${layout}" on a slide. Use ${FIXED_LAYOUTS.join(', ')}.`);
+    }
+    // A slide that already wears this layout is coming back from its own
+    // export, where every box is already where the slide has it.
+    const existing = deck.slides.find((candidate) => candidate.id === built.id);
+    if (existing && existing.layout === layout) {
+      placeNewPlaceholders(built, layout as FixedLayout, layoutMaster(deck, layout as FixedLayout), existing);
+      return built;
     }
     // A page that names a layout gets the editor's layout behaviour: its
     // title and body boxes (data-layout-slot, or a role class on an exported
@@ -697,22 +1190,25 @@ const FIXED_LAYOUTS: FixedLayout[] = ['freeform', 'standard', 'title'];
 /** A page the author must fix, as opposed to a compiler that failed. */
 export class HtmlAuthoringError extends Error {}
 
-function nextSlideId(used: Set<string>, index: number): string {
+function nextSlideId(used: Set<string>, index: number, reserved: Set<string> = new Set()): string {
   let candidate = `slide-${used.size + index + 1}`;
-  for (let n = 1; used.has(candidate); n++) candidate = `slide-${used.size + index + 1}-${n}`;
+  for (let n = 1; used.has(candidate) || reserved.has(candidate); n++) candidate = `slide-${used.size + index + 1}-${n}`;
+  used.add(candidate);
   return candidate;
 }
 
 /** Turn one measured slide into a deck slide, ids minted where absent. */
 export function slideFromMeasured(
   measured: MeasuredSlide,
-  opts: { slideId: string; usedIds: Set<string> },
+  opts: { slideId: string; usedIds: Set<string>; reservedIds?: Set<string> },
 ): Slide {
   const timeline: TimelineEntry[] = [];
   const elements: SlideElement[] = [];
 
   measured.nodes.forEach((node, index) => {
-    const id = uniqueId(node.elementId ?? `${opts.slideId}-${node.tag}-${index + 1}`, opts.usedIds);
+    const id = node.elementId
+      ? uniqueId(node.elementId, opts.usedIds)
+      : uniqueId(`${opts.slideId}-${node.tag}-${index + 1}`, opts.usedIds, opts.reservedIds);
     const element = elementFromNode(node, id, index + 1);
     if (!element) return;
     elements.push(element);
@@ -755,6 +1251,9 @@ export function elementFromNode(
       ? { morphId: node.dataset.morph || null } : {}),
     ...(node.dataset.lineageId !== undefined
       ? { lineageId: node.dataset.lineageId || null } : {}),
+    // A master decoration's copy keeps its link, or the next layout change
+    // added a fresh copy beside it under the same id.
+    ...(node.dataset.layoutMasterId ? { layoutMasterId: node.dataset.layoutMasterId } : {}),
   };
   const mediaBase = { ...base, style: { ...base.style } };
   // The player wrapper clips native media for crops and rounded corners. That
@@ -938,7 +1437,9 @@ export function elementFromNode(
     // markers and indentation would not survive into the deck.
     html: node.tag === 'ul' || node.tag === 'ol'
       ? `<${node.tag}>${node.html.trim()}</${node.tag}>`
-      : node.html.trim(),
+      // A deck text box's own markup is kept exactly: the player shows it
+      // pre-wrap, so even a trailing space is something it holds.
+      : node.preformatted ? node.html : node.html.trim(),
     align: alignFrom(node.attrs.textAlign),
     valign: valignFrom(node.dataset.valign),
     ...(contentStyle ? { contentStyle } : {}),
@@ -947,7 +1448,10 @@ export function elementFromNode(
     ...(node.dataset.layoutSlot === 'title' || node.dataset.layoutSlot === 'body'
       ? {
         layoutPlaceholder: node.dataset.layoutSlot,
-        class: base.class.includes(`role-${node.dataset.layoutSlot}`)
+        // A slot the page names for a new box brings that role's type with it;
+        // a deck object coming back from its export keeps the classes it has —
+        // a title box restyled as a caption stayed a caption.
+        class: node.elementId !== null || base.class.includes(`role-${node.dataset.layoutSlot}`)
           ? base.class
           : [...base.class, `role-${node.dataset.layoutSlot}`],
       }
@@ -998,13 +1502,19 @@ export function buildFromNode(
  * or grid and the compiler will measure whatever the browser makes of it.
  */
 export function slideToHtml(slide: Slide, canvas: { w: number; h: number }): string {
-  const builds = new Map(slide.timeline
-    .filter((entry) => entry.action.type === 'appear')
-    .map((entry) => [entry.action.target, entry]));
+  // An object's first appearance is the one its markup states; the compile
+  // pairs the page's build with that same entry (`carrySlideState`).
+  const builds = new Map<string, TimelineEntry>();
+  for (const entry of slide.timeline) {
+    if (entry.action.type === 'appear' && !builds.has(entry.action.target)) builds.set(entry.action.target, entry);
+  }
 
+  // What this slide is now, so a save of the page can tell its own edits
+  // from edits somebody else makes meanwhile.
+  const stamp = pageStampOf([slide])[slide.id];
   const body = [...slide.elements]
     .sort((a, b) => a.z - b.z)
-    .map((element) => elementToHtml(element, builds.get(element.id)))
+    .map((element) => elementToHtml(element, builds.get(element.id), stamp.elements[element.id]))
     .join('\n');
 
   // Both halves, and as separate declarations rather than the `background`
@@ -1021,6 +1531,7 @@ export function slideToHtml(slide: Slide, canvas: { w: number; h: number }): str
   const background = declarations ? ` ${styleAttr(declarations)}` : '';
   return `<section class="slide" data-slide-id="${escape(slide.id)}"`
     + ` data-canvas="${canvas.w}x${canvas.h}"`
+    + ` data-base="${stamp.slide}" data-base-ids="${escape(stamp.ids)}"`
     + (slide.name ? ` data-name="${escape(slide.name)}"` : '')
     + (slide.layout ? ` data-layout="${slide.layout}"` : '')
     + (slide.morphFromPrevious ? ' data-morph-from-previous="true"' : '')
@@ -1028,7 +1539,7 @@ export function slideToHtml(slide: Slide, canvas: { w: number; h: number }): str
     + `${background}>\n${body}\n</section>\n`;
 }
 
-function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
+function elementToHtml(element: SlideElement, build?: TimelineEntry, base?: string): string {
   const position = `position:absolute; left:${element.x}px; top:${element.y}px;`
     + ` width:${element.w}px; height:${element.h}px;`
     + (element.rot ? ` transform:rotate(${element.rot}deg);` : '')
@@ -1047,7 +1558,10 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       ? `data-morph="${escape(element.morphId ?? '')}"` : '',
     element.lineageId !== undefined
       ? `data-lineage-id="${escape(element.lineageId ?? '')}"` : '',
+    element.layoutMasterId ? `data-layout-master-id="${escape(element.layoutMasterId)}"` : '',
+    base ? `data-base="${escape(base)}"` : '',
     build ? `data-build="${build.trigger.on}${build.trigger.delay ? `+${build.trigger.delay}` : ''}"` : '',
+    build?.trigger.ref ? `data-build-ref="${escape(build.trigger.ref)}"` : '',
     element.type === 'text' && element.layoutPlaceholder
       ? `data-layout-slot="${element.layoutPlaceholder}"` : '',
   ].filter(Boolean).join(' ');
@@ -1134,7 +1648,11 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       }
       // `#t=` is how a static page asks for the in-point: without it the file
       // shows frame zero while the player shows the frame the talk starts on.
-      return `  <video ${attrs} src="${escape(mediaFragment(element))}"${trim}${flags}`
+      // A bare <video> means the deck's defaults (all three on), so a flag a
+      // deck video has off is said out loud, or the round trip turned it on.
+      const off = `${element.loop ? '' : ' data-loop="false"'}${element.muted ? '' : ' data-muted="false"'}`
+        + `${element.autoplay ? '' : ' data-autoplay="false"'}`;
+      return `  <video ${attrs} src="${escape(mediaFragment(element))}"${trim}${flags}${off}`
         + effectsDataAttrs(element)
         + mediaDataAttrs(element)
         + `${element.poster ? ` poster="${escape(element.poster)}"` : ''}`
@@ -1189,8 +1707,9 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         + ` data-original-type="${escape(element.originalType)}"`
         + ` ${styleAttr(position, inline)}>${escape(element.note)}</div>`;
     default:
-      return `  <div ${attrs} data-element="html" ${styleAttr(position, inline)}>`
-        + `${'html' in element ? element.html : ''}</div>`;
+      return `  <div ${attrs} data-element="html"`
+        + `${element.type === 'html' && element.fallbackReason ? ` data-fallback-reason="${escape(element.fallbackReason)}"` : ''}`
+        + ` ${styleAttr(position, inline)}>${'html' in element ? element.html : ''}</div>`;
   }
 }
 
@@ -1470,10 +1989,10 @@ function boxAttr(box: { x: number; y: number; w: number; h: number }): string {
   return `${box.x},${box.y},${box.w},${box.h}`;
 }
 
-export function uniqueId(preferred: string, used: Set<string>): string {
+export function uniqueId(preferred: string, used: Set<string>, reserved?: Set<string>): string {
   const base = preferred.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'element';
   let id = base;
-  for (let n = 2; used.has(id); n++) id = `${base}-${n}`;
+  for (let n = 2; used.has(id) || reserved?.has(id); n++) id = `${base}-${n}`;
   used.add(id);
   return id;
 }

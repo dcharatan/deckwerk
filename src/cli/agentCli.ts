@@ -43,7 +43,7 @@ import {
   waitForAgentResponse,
   writeAgentRequest,
 } from '../main/agentRuntime.js';
-import { adoptAuthoredIds, htmlSyncSummary } from '@shared/htmlSlides.js';
+import { adoptAuthoredIds, htmlSyncSummary, insertionAnchor, pageStampOf, stampPage, type PageStamp } from '@shared/htmlSlides.js';
 import { DECK_FILE, importAsset, importWebPage, loadDeck } from '../main/deckStore.js';
 import { injectWebBridgeRuntime } from '@shared/webBridge.js';
 import { measureBuiltTextOverflows } from './compileHtml.js';
@@ -104,6 +104,8 @@ The loop — edit HTML, the editor syncs it back:
   # then edit edit/<file>.html and save it; with the editor open the deck
   # follows within ~200ms. With it closed, apply the same file explicitly:
   apply     [deck] --html <file> [--after <slide>] [--label <text>]
+                                          new slides go after <slide> (id or
+                                          number; 0 puts them first), else last
 
 Working on a deck someone hosts on a collaboration server:
 
@@ -366,10 +368,11 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   }
 
   const deck = await loadDeck(deckDir);
-  // Like every other slide reference, `--after` takes an id or a 1-based number.
+  // Like every other slide reference, `--after` takes an id or a 1-based
+  // number; `--after 0` puts new slides first. Left out, they go last.
   const afterRef = options.get('after');
-  const after = afterRef === undefined ? null : slideIdForRef(deck, afterRef);
-  if (afterRef !== undefined && after === null) {
+  const after = afterRef === undefined ? undefined : insertionAnchor(deck, afterRef);
+  if (afterRef !== undefined && after === undefined) {
     io.err(`No such slide: ${afterRef}`);
     return EXIT_USAGE;
   }
@@ -393,12 +396,17 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
       ...(options.get('label') ? { label: options.get('label') } : {}),
     }, 180_000);
     const outcome = (response.payload ?? {}) as Partial<{
-      changes: unknown; slides: unknown; warnings: string[]; message: string;
+      changes: { replaced: string[]; inserted: string[]; deleted: string[]; moved: number };
+      slides: unknown; warnings: string[]; message: string; stamp: PageStamp;
     }>;
+    const changes = outcome.changes;
     io.out(json({
       status: response.status,
       revision: response.revision,
-      applied: response.status === 'applied',
+      // Whether the deck changed, as offline and on a hosted deck: a page that
+      // compiles to what the deck already holds is answered, not applied.
+      applied: response.status === 'applied' && Boolean(changes) && (changes!.replaced.length
+        + changes!.inserted.length + changes!.deleted.length + changes!.moved) > 0,
       live: true,
       ...(response.message ? { message: response.message } : {}),
       ...(outcome.changes ? { changes: outcome.changes } : {}),
@@ -408,15 +416,18 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
     }));
     if (response.status === 'conflict') return EXIT_CONFLICT;
     if (response.status === 'error') return EXIT_ERROR;
-    // The editor stamps ids only into files under edit/. Anything else (a
-    // drafts/ page) is stamped here, or applying it again would insert the
-    // slide a second time. A file the editor already stamped no longer
-    // matches what was sent, so this never overwrites its write.
-    if (Array.isArray(outcome.slides)) {
+    // The editor stamps files under edit/ itself. Anything else (a drafts/
+    // page) is stamped here, or applying it again would insert the slide a
+    // second time. Never a file in edit/: the editor's watcher would take
+    // this process's write for a save and compile the page again, later and
+    // against whatever the deck has become by then.
+    const inEditDir = dirname(filePath) === join(deckDir, 'edit');
+    if (Array.isArray(outcome.slides) && !inEditDir) {
       const authored = await readFile(filePath, 'utf8');
       if (authored === authoredBefore) {
-        const adopted = adoptAuthoredIds(authored, outcome.slides as Slide[]);
-        if (adopted) await writeFile(filePath, adopted, 'utf8');
+        const adopted = adoptAuthoredIds(authored, outcome.slides as Slide[]) ?? authored;
+        const stamped = outcome.stamp ? stampPage(adopted, outcome.stamp) : adopted;
+        if (stamped !== authored) await writeFile(filePath, stamped, 'utf8');
       }
     }
     return EXIT_OK;
@@ -437,12 +448,11 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   // push a previously fitted box into clipping and nothing else on this path
   // would ever say so.
   const overflows = await measureBuiltTextOverflows(deckDir, deck, slides);
-
-  const code = await applyTransaction(deckDir, transaction, io, {
+  const report = {
     // Insert and replace are indistinguishable in the result otherwise: both
     // end with the deck showing what was authored. Naming the deleted slides
     // is the whole point — that is the outcome nobody asks for on purpose.
-    changes: htmlSyncSummary(transaction.operations),
+    changes: htmlSyncSummary(transaction?.operations ?? []),
     overflows,
     slides: slides.map((slide) => ({
       id: slide.id,
@@ -454,17 +464,22 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
     // Inline style the browser's parser silently dropped: without this the
     // apply reports success while the page laid out without the declaration.
     ...(warnings.length > 0 ? { warnings } : {}),
-  });
+  };
+  const code = transaction
+    ? await applyTransaction(deckDir, transaction, io, report)
+    : (io.out(json({ status: 'applied', revision: deckRevision(deck), applied: false, live: false, ...report })), EXIT_OK);
 
   // Stamp the assigned ids back into the file so applying it again replaces
   // these slides instead of inserting them a second time. Skipped if the file
   // changed while the compile ran — stamping ids onto contents that were not
   // compiled would misattribute them.
+  // The fingerprints too: the next save of the page is compared with what
+  // it says now, not with what it was exported from.
   if (code === EXIT_OK) {
     const authored = await readFile(filePath, 'utf8');
     if (authored === authoredBefore) {
-      const adopted = adoptAuthoredIds(authored, slides);
-      if (adopted) await writeFile(filePath, adopted, 'utf8');
+      const stamped = stampPage(adoptAuthoredIds(authored, slides) ?? authored, pageStampOf(slides));
+      if (stamped !== authored) await writeFile(filePath, stamped, 'utf8');
     }
   }
   return code;

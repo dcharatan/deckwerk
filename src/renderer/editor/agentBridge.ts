@@ -9,6 +9,7 @@ import {
   type ComputedSlideScene,
 } from '@shared/agent.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
+import type { PageStamp } from '@shared/htmlSlides.js';
 import { fitAutoText, renderSlide } from '../player/render.js';
 import { sameSlideIgnoringNotes, type EditorStore } from './store.js';
 
@@ -34,6 +35,8 @@ export interface HtmlSyncOutcome {
   slides: Array<{ id: string; elements: Array<{ id: string; type: string; box: { x: number; y: number; w: number; h: number } }> }>;
   warnings: string[];
   message: string;
+  /** What the page's slides now are, for stamping into the page (`stampPage`). */
+  stamp?: PageStamp;
 }
 
 /** Publishes the editor's live, computed selection through the file-backed main-process bridge. */
@@ -87,7 +90,8 @@ export class AgentBridge {
       try {
         if (!this.options.syncHtml) throw new Error('This editor cannot compile authoring files');
         const outcome = await this.options.syncHtml({
-          path: request.path, contents: request.contents, after: request.after ?? null, label: request.label,
+          // Undefined appends; null is an explicit "before the first slide".
+          path: request.path, contents: request.contents, after: request.after, label: request.label,
         });
         this.options.respond({
           version: AGENT_PROTOCOL_VERSION,
