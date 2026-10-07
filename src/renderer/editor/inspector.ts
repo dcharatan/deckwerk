@@ -1,4 +1,5 @@
 import type { Deck, MediaEffect, Slide, SlideElement } from '@shared/deck.js';
+import { braceDepthOf } from '@shared/brace.js';
 import {
   paragraphsToList,
   paragraphsToOrderedList,
@@ -1206,10 +1207,14 @@ export class Inspector {
     shapes: Array<Extract<SlideElement, { type: 'shape' }>>,
   ): HTMLElement {
     const kind = shapes[0].shape;
-    const label = kind === 'arrow' ? 'Arrow style' : kind === 'line' ? 'Line style' : 'Shape style';
+    const label = kind === 'arrow' ? 'Arrow style'
+      : kind === 'line' ? 'Line style'
+        : kind === 'brace' ? 'Brace style' : 'Shape style';
     const wrap = group(label);
 
-    if (kind === 'line' || kind === 'arrow') {
+    if (kind === 'brace') {
+      // A brace is shaped by its point handle on the slide; it has no fill.
+    } else if (kind === 'line' || kind === 'arrow') {
       wrap.appendChild(mixedCheckboxField(
         'Curved',
         commonValue(shapes.map((shape) => Boolean(shape.control))),
@@ -2233,6 +2238,7 @@ export class Inspector {
           { value: 'ellipse', title: 'Ellipse', icon: SHAPE_KIND_GLYPHS.ellipse },
           { value: 'line', title: 'Line', icon: SHAPE_KIND_GLYPHS.line },
           { value: 'arrow', title: 'Arrow', icon: SHAPE_KIND_GLYPHS.arrow },
+          { value: 'brace', title: 'Curly brace', icon: SHAPE_KIND_GLYPHS.brace },
         ];
         // Imported vector art keeps its geometry as a path; it can be shown
         // but not chosen, since there is no path to switch another kind to.
@@ -2246,7 +2252,8 @@ export class Inspector {
             }),
           ),
         );
-        const stroked = el.shape === 'line' || el.shape === 'arrow';
+        const brace = el.shape === 'brace';
+        const stroked = el.shape === 'line' || el.shape === 'arrow' || brace;
         const paint = document.createElement('div');
         paint.className = 'compact-field-row';
         // A line has no interior, so Fill and Radius would do nothing; the
@@ -2289,6 +2296,17 @@ export class Inspector {
             ),
           );
           style.content.appendChild(nums);
+        } else if (brace) {
+          const row = document.createElement('div');
+          row.className = 'compact-field-row';
+          row.appendChild(
+            numberField('DEPTH', braceDepthOf(el), (v) =>
+              this.store.updateSelected((e) => {
+                if (e.type === 'shape') e.braceDepth = v;
+              }, { label: 'Change brace depth' }), { unit: 'px' },
+            ),
+          );
+          style.content.appendChild(row);
         } else {
           const flags = document.createElement('div');
           flags.className = 'compact-field-row shape-line-flags';
@@ -3190,6 +3208,7 @@ const SHAPE_KIND_GLYPHS = {
   ellipse: '<ellipse cx="7" cy="7" rx="5" ry="4"/>',
   line: '<path d="M2 12L12 2"/>',
   arrow: '<path d="M2 12L12 2M7 2h5v5"/>',
+  brace: '<path d="M1 4.5a2 2 0 0 0 2 2h2a2 2 0 0 1 2 2 2 2 0 0 1 2-2h2a2 2 0 0 0 2-2"/>',
   path: '<path d="M2 11C4 3 6 3 8 8s3 4 4-6"/>',
 } as const;
 

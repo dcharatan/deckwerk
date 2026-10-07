@@ -2,6 +2,7 @@ import { openContextMenu } from './contextMenuPlacement.js';
 import type { Deck, Slide, SlideElement, TextEl } from '@shared/deck.js';
 import { canHoldText, shapeToTextBox } from '@shared/shapeText.js';
 import { moveCorner, polygonPoints } from '@shared/polygonShape.js';
+import { braceDepthToward, bracePolyline, braceTip } from '@shared/brace.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 
 type XY = { x: number; y: number };
@@ -640,6 +641,7 @@ type DragMode =
       origins: Map<string, { start: XY; end: XY }>;
     }
   | { kind: 'curve-control'; elementId: string }
+  | { kind: 'brace-tip'; elementId: string }
   | { kind: 'polygon-corner'; elementId: string; index: number };
 
 /** Fired on the canvas host with a message (`detail`) for the shell's status bar. */
@@ -1790,7 +1792,7 @@ export class EditorCanvas {
       box.style.top = `${el.y}px`;
       box.style.width = `${el.w}px`;
       box.style.height = `${el.h}px`;
-      const isLine = el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow');
+      const isLine = hasEndpoints(el);
       // The outline must sit on the element as drawn, not where the frame
       // would be at rot 0. Same rotation, same centre as the element node.
       // Line/arrow selections stay unrotated: their children (endpoints,
@@ -1800,10 +1802,10 @@ export class EditorCanvas {
       // Counter-scale so outlines and handles stay one visual size at any zoom.
       box.style.setProperty('--inv', String(1 / this.scale));
 
-      // Lines and arrows get endpoint handles instead of a resize box: what
-      // you want to move is where the arrow starts and ends, not its bounding
-      // rectangle.
-      if (el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow')) {
+      // Lines, arrows and braces get endpoint handles instead of a resize
+      // box: what you want to move is where the arrow starts and ends, not
+      // its bounding rectangle.
+      if (el.type === 'shape' && hasEndpoints(el)) {
         box.classList.add('line-sel');
         const pts = lineEndpoints(el);
         if (selection.size > 1) {
@@ -1817,9 +1819,11 @@ export class EditorCanvas {
           const path = document.createElementNS(ns, 'path');
           const start = { x: pts.start.x - el.x, y: pts.start.y - el.y };
           const end = { x: pts.end.x - el.x, y: pts.end.y - el.y };
-          path.setAttribute('d', el.control
-            ? `M ${start.x} ${start.y} Q ${el.control.x - el.x} ${el.control.y - el.y} ${end.x} ${end.y}`
-            : `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+          path.setAttribute('d', el.shape === 'brace'
+            ? `M ${bracePolyline(el).map((p) => `${p.x - el.x} ${p.y - el.y}`).join(' L ')}`
+            : el.control
+              ? `M ${start.x} ${start.y} Q ${el.control.x - el.x} ${el.control.y - el.y} ${end.x} ${end.y}`
+              : `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
           path.setAttribute('fill', 'none');
           path.setAttribute('stroke-width', String(3 / this.scale));
           svg.appendChild(path);
@@ -1853,6 +1857,20 @@ export class EditorCanvas {
           control.style.margin = '0';
           control.style.transform = 'translate(-50%, -50%)';
           box.appendChild(control);
+        }
+        if (el.shape === 'brace') {
+          // The point: dragging it along the chord's normal sets the depth,
+          // and with it the radius of every curl; across the chord it flips.
+          const tip = braceTip(el);
+          const handle = document.createElement('div');
+          handle.className = 'handle handle-curve-control handle-brace-tip';
+          handle.dataset.braceTip = 'true';
+          handle.dataset.elementId = el.id;
+          handle.style.left = `${tip.x - el.x}px`;
+          handle.style.top = `${tip.y - el.y}px`;
+          handle.style.margin = '0';
+          handle.style.transform = 'translate(-50%, -50%)';
+          box.appendChild(handle);
         }
         frag.appendChild(box);
         continue;
@@ -2169,6 +2187,13 @@ export class EditorCanvas {
       return;
     }
 
+    // The point of a brace.
+    if (target.dataset?.braceTip && target.dataset.elementId) {
+      this.store.beginTransaction('Shape brace');
+      this.drag = { kind: 'brace-tip', elementId: target.dataset.elementId };
+      return;
+    }
+
     // Bend handle on a quadratic line or arrow.
     if (target.dataset?.curveControl && target.dataset.elementId) {
       this.store.beginTransaction();
@@ -2203,7 +2228,7 @@ export class EditorCanvas {
       const origins = new Map<string, { start: XY; end: XY }>();
       for (const e of slide.elements) {
         if (e.id !== target.dataset.elementId && !selected.has(e.id)) continue;
-        if (e.type !== 'shape' || (e.shape !== 'line' && e.shape !== 'arrow')) continue;
+        if (!hasEndpoints(e)) continue;
         origins.set(e.id, lineEndpoints(e));
       }
       this.drag = {
@@ -2342,6 +2367,7 @@ export class EditorCanvas {
       this.drag.kind !== 'marquee' &&
       this.drag.kind !== 'endpoint' &&
       this.drag.kind !== 'curve-control' &&
+      this.drag.kind !== 'brace-tip' &&
       this.drag.kind !== 'polygon-corner'
     ) {
       const start = this.drag.startCanvas;
@@ -2725,6 +2751,16 @@ export class EditorCanvas {
         this.store.updateSelected((target) => {
           if (target.id === drag.elementId && target.type === 'shape') {
             target.control = { x: Math.round(point.x), y: Math.round(point.y) };
+          }
+        });
+        break;
+      }
+
+      case 'brace-tip': {
+        const drag = this.drag;
+        this.store.updateSelected((target) => {
+          if (target.id === drag.elementId && target.type === 'shape') {
+            target.braceDepth = Math.round(braceDepthToward(target, point));
           }
         });
         break;
@@ -6757,6 +6793,11 @@ export function elementContainsPoint(
   point: { x: number; y: number },
   tolerance = LINE_HIT_SCREEN_PX,
 ): boolean {
+  if (el.type === 'shape' && el.shape === 'brace') {
+    const points = bracePolyline(el);
+    const reach = Math.max(tolerance, el.strokeWidth / 2);
+    return points.slice(1).some((next, i) => distanceToSegment(point, points[i], next) <= reach);
+  }
   if (el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow')) {
     const { start, end } = lineEndpoints(el);
     if (el.control) {
@@ -6968,8 +7009,13 @@ function distanceToSegment(
   return Math.hypot(point.x - (start.x + t * vx), point.y - (start.y + t * vy));
 }
 
+/** Shapes edited by their two endpoints rather than a resize box. */
+export function hasEndpoints(el: SlideElement): boolean {
+  return el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow' || el.shape === 'brace');
+}
+
 /**
- * The two endpoints of a line/arrow element in canvas coordinates. The shape
+ * The two endpoints of a line/arrow/brace element in canvas coordinates. The shape
  * renders from the box's left-centre to right-centre, rotated about the
  * box centre — so endpoints are derived, not stored.
  */

@@ -1,4 +1,5 @@
 import type { SlideElement } from './deck.js';
+import { braceDepthOf, bracePath } from './brace.js';
 
 /**
  * A shape as SVG markup.
@@ -26,7 +27,7 @@ export function shapeSvg(el: Shape): string {
   // collapses a thin filled bar (an axis line, a rule) to nothing.
   const inset = stroke === 'none' ? 0 : el.strokeWidth / 2;
   // Open strokes must not be flood-filled; closed shapes take their fill.
-  const unfilled = el.shape === 'line' || el.shape === 'arrow';
+  const unfilled = el.shape === 'line' || el.shape === 'arrow' || el.shape === 'brace';
   const paint = `fill="${unfilled ? 'none' : fill}" stroke="${stroke}"`
     + ` stroke-width="${el.strokeWidth}"`;
 
@@ -52,6 +53,10 @@ export function shapeSvg(el: Shape): string {
         : `<line x1="0" y1="${el.h / 2}" x2="${el.w}" y2="${el.h / 2}"${markers} ${paint}/>`;
       break;
     }
+    case 'brace':
+      node = `<path d="${bracePath(el.w, el.h, braceDepthOf(el))}" stroke-linecap="round"`
+        + ` stroke-linejoin="round" ${paint}/>`;
+      break;
     case 'path': {
       if (el.arrowEnd || el.arrowStart) defs = arrowMarker(markerId, stroke);
       const markers = (el.arrowStart ? ` marker-start="url(#${markerId})"` : '')

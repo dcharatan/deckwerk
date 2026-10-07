@@ -498,6 +498,32 @@ describe('deck objects become authored HTML', () => {
     expect(html).not.toContain('data-arrow-start');
   });
 
+  it('round-trips a curly brace and its signed depth', () => {
+    const deck = emptyDeck('Braces');
+    const brace = {
+      id: 'brace', type: 'shape' as const, x: 200, y: 300, w: 400, h: 2, rot: 30, z: 2,
+      opacity: 1, class: [], style: {}, shape: 'brace' as const, fill: null, stroke: '#111111',
+      strokeWidth: 6, radius: 0, path: null, pathSize: null, arrowStart: false,
+      arrowEnd: false, braceDepth: -45,
+    };
+    deck.slides[0].elements = [brace];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-shape="brace"');
+    expect(html).toContain('data-brace-depth="-45"');
+
+    const back = elementFromNode(node({
+      tag: 'div', html: '',
+      dataset: { element: 'shape', shape: 'brace', stroke: '#111111', strokeWidth: '6', braceDepth: '-45' },
+    }), 'brace', 2);
+    expect(back).toMatchObject({ shape: 'brace', braceDepth: -45 });
+    // A brace written without a depth stays without one and draws the default.
+    const bare = elementFromNode(node({
+      tag: 'div', html: '', dataset: { element: 'shape', shape: 'brace' },
+    }), 'bare', 2);
+    expect(bare).toMatchObject({ shape: 'brace' });
+    expect('braceDepth' in bare!).toBe(false);
+  });
+
   it('matches the HTML preview wrapper to rounded shape effect contours', () => {
     const deck = emptyDeck('Shape effects');
     const shape = {

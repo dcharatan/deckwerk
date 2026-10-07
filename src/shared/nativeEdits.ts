@@ -127,7 +127,7 @@ const ELEMENT_PROPERTIES: Record<SlideElement['type'], PropertyDoc[]> = {
     { path: 'end', type: 'number >= 0|null', description: 'Non-destructive trim out-point; null means media end.', example: 8.25 },
   ],
   shape: [
-    { path: 'shape', type: 'enum', values: ['rect', 'ellipse', 'line', 'arrow', 'path'], description: 'Shape kind.', example: 'rect' },
+    { path: 'shape', type: 'enum', values: ['rect', 'ellipse', 'line', 'arrow', 'path', 'brace'], description: 'Shape kind.', example: 'rect' },
     { path: 'fill', type: 'CSS paint|null', description: 'Fill color or gradient.', example: '#2463eb' },
     { path: 'stroke', type: 'CSS color|null', description: 'Outline color.', example: '#ffffff' },
     { path: 'strokeWidth', type: 'number >= 0', description: 'Outline width in pixels.', example: 2 },
@@ -135,6 +135,7 @@ const ELEMENT_PROPERTIES: Record<SlideElement['type'], PropertyDoc[]> = {
     { path: 'arrowStart', type: 'boolean', description: 'Arrowhead at the start of a line.', example: false },
     { path: 'arrowEnd', type: 'boolean', description: 'Arrowhead at the end of a line.', example: true },
     { path: 'control', type: '{x,y}|null', description: 'Canvas-space quadratic curve control point.', example: { x: 600, y: 300 } },
+    { path: 'braceDepth', type: 'number', description: 'For braces: signed distance from the chord to the point, along the element\'s own +y; half of it is the curl radius.', example: 40 },
     { path: 'path', type: 'SVG path|null', description: 'SVG path data for path shapes.', example: 'M0 0 L100 100' },
     { path: 'pathSize', type: '{w,h}|null', description: 'Coordinate space of SVG path data.', example: { w: 100, h: 100 } },
   ],

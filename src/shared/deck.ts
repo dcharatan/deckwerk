@@ -258,7 +258,7 @@ const VideoElement = BaseElement.extend({
 
 const ShapeElement = BaseElement.extend({
   type: z.literal('shape'),
-  shape: z.enum(['rect', 'ellipse', 'line', 'arrow', 'path']),
+  shape: z.enum(['rect', 'ellipse', 'line', 'arrow', 'path', 'brace']),
   fill: z.string().nullable().default(null),
   /**
    * A two-colour gradient: from `fill` to `to`, running in `angle` degrees
@@ -288,6 +288,13 @@ const ShapeElement = BaseElement.extend({
   arrowEnd: z.boolean().default(false),
   /** Absolute canvas-space control point for an editable quadratic curve. */
   control: z.object({ x: z.number(), y: z.number() }).nullable().optional(),
+  /**
+   * For `shape: "brace"`: how far the brace's point stands off the chord
+   * between its two endpoints, in canvas pixels along the element's own +y
+   * (down when unrotated). The sign is which way it points; half the
+   * magnitude is the radius of all four curls. Absent means the default.
+   */
+  braceDepth: z.number().optional(),
 });
 
 /** Escape hatch: arbitrary markup that still drags and resizes like anything else. */

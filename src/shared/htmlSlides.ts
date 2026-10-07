@@ -1354,6 +1354,8 @@ export function elementFromNode(
       arrowStart: node.dataset.arrowStart === 'true',
       arrowEnd: node.dataset.arrowEnd === 'true',
       ...(node.dataset.control ? { control: { x: cx, y: cy } } : {}),
+      ...(Number.isFinite(Number.parseFloat(node.dataset.braceDepth ?? ''))
+        ? { braceDepth: Number.parseFloat(node.dataset.braceDepth ?? '') } : {}),
     };
   }
 
@@ -1672,6 +1674,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry, base?: stri
         + (element.arrowStart ? ' data-arrow-start="true"' : '')
         + (element.arrowEnd ? ' data-arrow-end="true"' : '')
         + (element.control ? ` data-control="${element.control.x},${element.control.y}"` : '')
+        + (element.braceDepth !== undefined ? ` data-brace-depth="${element.braceDepth}"` : '')
         + attr('data-path', element.path)
         + (element.pathSize ? ` data-path-size="${element.pathSize.w},${element.pathSize.h}"` : '')
         // Paint effects live on the wrapper rather than the nested SVG. Give
@@ -1944,8 +1947,8 @@ function valignFrom(value: string | undefined): 'top' | 'middle' | 'bottom' {
   return value === 'middle' || value === 'bottom' ? value : 'top';
 }
 
-function shapeKind(value: string | undefined): 'rect' | 'ellipse' | 'line' | 'arrow' | 'path' {
-  const kinds = ['rect', 'ellipse', 'line', 'arrow', 'path'] as const;
+function shapeKind(value: string | undefined): 'rect' | 'ellipse' | 'line' | 'arrow' | 'path' | 'brace' {
+  const kinds = ['rect', 'ellipse', 'line', 'arrow', 'path', 'brace'] as const;
   return kinds.find((kind) => kind === value) ?? 'rect';
 }
 
