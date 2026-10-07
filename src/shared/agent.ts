@@ -9,6 +9,7 @@ import {
   type SlideElement,
 } from './deck.js';
 import { renameRetiredFields } from './fieldAliases.js';
+import { braceDepthOf } from './brace.js';
 
 export const AGENT_PROTOCOL_VERSION = 1 as const;
 
@@ -48,6 +49,7 @@ export const ComputedElementSceneSchema = z.object({
     arrowStart: z.boolean(),
     arrowEnd: z.boolean(),
     control: z.object({ x: z.number(), y: z.number() }).nullable(),
+    braceDepth: z.number().nullable(),
     path: z.string().nullable(),
   }).nullable(),
   morphId: z.string().nullable(),
@@ -481,6 +483,7 @@ function authoredElementScene(element: SlideElement, selected: Set<string>): Com
       arrowStart: element.arrowStart,
       arrowEnd: element.arrowEnd,
       control: element.control ?? null,
+      braceDepth: element.shape === 'brace' ? braceDepthOf(element) : null,
       path: element.path,
     } : null,
     morphId: element.morphId ?? null,

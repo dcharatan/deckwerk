@@ -12,6 +12,7 @@ const SHAPE_NAMES: Record<string, string> = {
   ellipse: 'ellipse',
   line: 'line',
   arrow: 'arrow',
+  brace: 'brace',
   path: 'shape',
 };
 

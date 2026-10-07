@@ -1,3 +1,4 @@
+import { braceDepthOf } from '@shared/brace.js';
 import {
   AGENT_PROTOCOL_VERSION,
   applyAgentTransaction,
@@ -426,6 +427,7 @@ function computedElement(
       arrowStart: element.arrowStart,
       arrowEnd: element.arrowEnd,
       control: element.control ?? null,
+      braceDepth: element.shape === 'brace' ? braceDepthOf(element) : null,
       path: element.path,
     } : null,
     morphId: element.morphId ?? null,

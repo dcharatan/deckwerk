@@ -1,5 +1,6 @@
 import type { ShapeEl, TextEl } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
+import { DEFAULT_BRACE_DEPTH } from '@shared/brace.js';
 import { presetPath, type PolygonPreset } from '@shared/polygonShape.js';
 import { applyTableColumnWidths } from '@shared/paragraphs.js';
 import { newObjectColors } from '@shared/themes.js';
@@ -102,10 +103,10 @@ export function insertPolygon(store: EditorStore, preset: PolygonPreset): ShapeE
   return created;
 }
 
-/** Insert a native line or arrow and select it. */
+/** Insert a native line, arrow or curly brace and select it. */
 export function insertLine(
   store: EditorStore,
-  kind: 'line' | 'arrow',
+  kind: 'line' | 'arrow' | 'brace',
   curved = false,
 ): ShapeEl {
   const { deck } = store.get();
@@ -120,13 +121,14 @@ export function insertLine(
     control: curved
       ? { x: Math.round(deck.canvas.w * 0.35) + 210, y: Math.round(deck.canvas.h * 0.5) - 140 }
       : null,
+    ...(kind === 'brace' ? { braceDepth: DEFAULT_BRACE_DEPTH } : {}),
   };
   store.commit((d) => d.slides[store.get().slideIndex].elements.push(created));
   store.select([created.id]);
   return created;
 }
 
-type ShapeKind = 'rect' | 'ellipse' | PolygonPreset | 'line' | 'arrow' | 'curved-arrow';
+type ShapeKind = 'rect' | 'ellipse' | PolygonPreset | 'line' | 'arrow' | 'curved-arrow' | 'brace';
 
 function shapeIcon(paths: string): string {
   return (
@@ -153,6 +155,8 @@ const SHAPE_OPTIONS: Array<{ kind: ShapeKind; label: string; icon: string }> = [
     icon: shapeIcon('<path d="M2.5 13.5 13.5 2.5M7.5 2.5h6v6"/>') },
   { kind: 'curved-arrow', label: 'Curved arrow',
     icon: shapeIcon('<path d="M2.5 13.5C3 7 7 3 13.5 2.7M8.6 2.5l5-.2.2 5"/>') },
+  { kind: 'brace', label: 'Curly brace',
+    icon: shapeIcon('<path d="M1.5 5a2 2 0 0 0 2 2h2.5a2 2 0 0 1 2 2 2 2 0 0 1 2-2h2.5a2 2 0 0 0 2-2"/>') },
 ];
 
 /** Shape menu: a custom dropdown so each option carries an icon. */
@@ -209,7 +213,7 @@ export function createShapeInsertPicker(store: EditorStore): HTMLElement {
         item.blur();
         trigger.blur();
         if (kind === 'curved-arrow') insertLine(store, 'arrow', true);
-        else if (kind === 'line' || kind === 'arrow') insertLine(store, kind);
+        else if (kind === 'line' || kind === 'arrow' || kind === 'brace') insertLine(store, kind);
         else if (kind === 'rect' || kind === 'ellipse') insertShape(store, kind);
         else insertPolygon(store, kind);
       });

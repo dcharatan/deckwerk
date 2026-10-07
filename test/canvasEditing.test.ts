@@ -2,7 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { emptyDeck } from '../src/shared/deck.js';
+import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
+import { DEFAULT_BRACE_DEPTH, braceTip } from '../src/shared/brace.js';
 import { THEMES, chooseDeckTheme, fullThemeSelection } from '../src/shared/themes.js';
 import {
   EditorCanvas,
@@ -2494,6 +2495,96 @@ describe('same-kind multi-selection properties', () => {
       .toEqual([true, true]);
     expect(videoGroup.textContent).not.toContain('Edit mask');
     expect(videoGroup.textContent).not.toContain('Trim');
+  });
+});
+
+describe('curly braces', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  function stageAtOne(host: HTMLElement): void {
+    host.querySelector<HTMLElement>('.stage')!.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+  }
+
+  function pointer(target: EventTarget, type: string, x: number, y: number): void {
+    target.dispatchEvent(new PointerEvent(type, {
+      clientX: x, clientY: y, bubbles: true, pointerId: 1, button: 0,
+    }));
+  }
+
+  const current = (store: ReturnType<typeof setup>['store'], id: string) =>
+    store.slide!.elements.find((el) => el.id === id) as Extract<SlideElement, { type: 'shape' }>;
+
+  it('is offered by the Shape menu and inserted with two endpoints and a point handle', () => {
+    const { store, host } = setup();
+    const picker = createShapeInsertPicker(store);
+    document.body.appendChild(picker);
+    picker.querySelector<HTMLButtonElement>('.shape-menu-trigger')!.click();
+    const item = [...picker.querySelectorAll<HTMLButtonElement>('.shape-menu-item')]
+      .find((button) => button.textContent === 'Curly brace')!;
+    item.click();
+    const brace = store.selectedElements()[0];
+    expect(brace).toMatchObject({ type: 'shape', shape: 'brace', braceDepth: DEFAULT_BRACE_DEPTH });
+    expect(host.querySelectorAll('.handle-endpoint')).toHaveLength(2);
+    const tip = host.querySelector<HTMLElement>('.handle-brace-tip')!;
+    const expected = braceTip(brace as Extract<SlideElement, { type: 'shape' }>);
+    expect(Number.parseFloat(tip.style.left) + brace.x).toBeCloseTo(expected.x, 1);
+    expect(Number.parseFloat(tip.style.top) + brace.y).toBeCloseTo(expected.y, 1);
+    expect(host.querySelector(`[data-element-id="${brace.id}"] svg > path`)!.getAttribute('d'))
+      .toContain(' A ');
+  });
+
+  it('sets depth and radius from the point handle, and flips across the chord', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const brace = insertLine(store, 'brace');
+    const tip = braceTip(brace);
+    const handle = host.querySelector<HTMLElement>('.handle-brace-tip')!;
+    pointer(handle, 'pointerdown', tip.x, tip.y);
+    // Off the bisector: only the component along the normal counts.
+    pointer(host, 'pointermove', tip.x + 90, tip.y + 50);
+    expect(current(store, brace.id).braceDepth).toBe(DEFAULT_BRACE_DEPTH + 50);
+    expect(host.querySelector(`[data-element-id="${brace.id}"] svg > path`)!.getAttribute('d'))
+      .toContain(`A ${(DEFAULT_BRACE_DEPTH + 50) / 2} `);
+    // Dragged to the other side of the chord, the brace points the other way.
+    pointer(host, 'pointermove', tip.x, brace.y + brace.h / 2 - 30);
+    pointer(host, 'pointerup', tip.x, brace.y + brace.h / 2 - 30);
+    expect(current(store, brace.id).braceDepth).toBe(-30);
+    // One gesture, one undo entry.
+    store.undo();
+    expect(current(store, brace.id).braceDepth).toBe(DEFAULT_BRACE_DEPTH);
+  });
+
+  it('drags an endpoint with snapping, and the point follows the new midpoint', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const brace = insertLine(store, 'brace');
+    const handle = host.querySelector<HTMLElement>('.handle-endpoint[data-endpoint="end"]')!;
+    const { end } = lineEndpoints(brace);
+    pointer(handle, 'pointerdown', end.x, end.y);
+    // The video's right edge is x=740; 4px past it snaps onto it.
+    pointer(host, 'pointermove', 744, 900);
+    expect(host.querySelectorAll('.guide-x')).toHaveLength(1);
+    pointer(host, 'pointerup', 744, 900);
+    const changed = current(store, brace.id);
+    // Within the rounding a rotated line's integer box allows.
+    expect(Math.abs(lineEndpoints(changed).end.x - 740)).toBeLessThan(1);
+    expect(changed.braceDepth).toBe(DEFAULT_BRACE_DEPTH);
+    const { start, end: moved } = lineEndpoints(changed);
+    const tip = braceTip(changed);
+    expect(Math.hypot(tip.x - start.x, tip.y - start.y))
+      .toBeCloseTo(Math.hypot(tip.x - moved.x, tip.y - moved.y), 6);
+    const drawn = host.querySelector<HTMLElement>('.handle-brace-tip')!;
+    expect(Number.parseFloat(drawn.style.left) + changed.x).toBeCloseTo(tip.x, 1);
+  });
+
+  it('is hit along its drawn curve, not across its whole span', () => {
+    const { store } = setup();
+    const brace = insertLine(store, 'brace');
+    const tip = braceTip(brace);
+    expect(elementContainsPoint(brace, tip, 2)).toBe(true);
+    // Halfway between the chord and the point, beside the point: empty space.
+    expect(elementContainsPoint(brace, { x: tip.x - 120, y: tip.y }, 2)).toBe(false);
   });
 });
 
