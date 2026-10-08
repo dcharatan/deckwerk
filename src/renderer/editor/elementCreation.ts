@@ -17,7 +17,7 @@ export function insertText(store: EditorStore): TextEl {
     type: 'text', id: makeId('text'),
     x: Math.round(deck.canvas.w * 0.1), y: Math.round(deck.canvas.h * 0.4),
     w: 400, h: 80, rot: 0, z: nextZ(store),
-    opacity: 1, class: ['placeholder'], style: {}, html: 'New text', align: 'left', valign: 'top',
+    opacity: 1, class: ['placeholder'], style: {}, html: 'New text', align: 'center', valign: 'top',
     // A box from the toolbar is usually a label — slides already come with a
     // body box for prose — so it hugs its text and the canvas measures it to
     // size. Dragging a handle turns it into an ordinary wrapping box.

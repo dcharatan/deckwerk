@@ -2797,6 +2797,8 @@ describe('object creation and manipulation', () => {
     // A toolbar box is a label: it hugs its text instead of being a column.
     expect(text.autoSize).toBe(true);
     expect(text.autoFit).toBeUndefined();
+    // Centred, so a label grows evenly about where it was put.
+    expect(text.align).toBe('center');
   });
 
   it('turns a sized-to-text box into an ordinary one when a handle resizes it', () => {

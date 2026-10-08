@@ -672,6 +672,8 @@ export class EditorCanvas {
   private overlay: HTMLElement;
   private zoomInput: HTMLInputElement;
   private tableHeightSyncPending = false;
+  /** Content-size passes run since the last frame; see scheduleTableHeightSync. */
+  private tableHeightSyncPassesThisFrame = 0;
 
   /** Final canvas-pixel to screen-pixel scale (fit scale × user zoom). */
   private scale = 1;
@@ -1199,44 +1201,87 @@ export class EditorCanvas {
    * Keep content-sized frames tight around what they hold: native tables
    * around their laid-out rows, and text boxes sized to their text around
    * their text.
+   *
+   * The pass runs as a microtask: after the render that queued it, but
+   * before the browser paints. A frame later was too late — every render
+   * from a deck holding a stale size (a toggle, a collaborator's echo, a
+   * reload) painted that size for one frame before the fit corrected it,
+   * which is the flicker. Passes that keep queueing passes are capped per
+   * frame, so a measurement that never settled would cost a frame per step
+   * rather than hang the page.
    */
   private scheduleTableHeightSync(): void {
     if (this.tableHeightSyncPending) return;
     this.tableHeightSyncPending = true;
-    requestAnimationFrame(() => {
+    const run = () => {
       this.tableHeightSyncPending = false;
-      if (this.editingId) return;
-      const slide = this.store.slide;
-      if (!slide) return;
-      const heights = new Map<string, number>();
-      const boxes = new Map<string, { x: number; w: number; h: number }>();
-      for (const element of slide.elements) {
-        if (element.type === 'text' && element.autoSize && !element.table) {
-          const node = this.slideLayer.querySelector<HTMLElement>(
-            `[data-element-id="${CSS.escape(element.id)}"]`,
-          );
-          const box = node ? measureTextToSize(node, element) : null;
-          if (box) boxes.set(element.id, box);
+      this.syncContentSizes();
+    };
+    if (this.tableHeightSyncPassesThisFrame >= 8) {
+      requestAnimationFrame(run);
+      return;
+    }
+    if (this.tableHeightSyncPassesThisFrame++ === 0) {
+      requestAnimationFrame(() => { this.tableHeightSyncPassesThisFrame = 0; });
+    }
+    queueMicrotask(run);
+  }
+
+  private syncContentSizes(): void {
+    const slide = this.store.slide;
+    if (!slide) return;
+    const heights = new Map<string, number>();
+    const boxes = new Map<string, { x: number; w: number; h: number }>();
+    for (const element of slide.elements) {
+      if (element.type === 'text' && element.autoSize && !element.table) {
+        const node = this.slideLayer.querySelector<HTMLElement>(
+          `[data-element-id="${CSS.escape(element.id)}"]`,
+        );
+        if (!node) continue;
+        // The box being typed into owns its size: it travels with the text
+        // commits. A render may still have put the stored size back on the
+        // node (a commit that has not caught up with the last keystrokes),
+        // so the live size goes back on with it. Every other box fits as usual.
+        if (element.id === this.editingId) {
+          this.followTextSizeWhileEditing(node, element.id);
           continue;
         }
-        if (element.type !== 'text' || !element.table?.autoHeight || element.autoFit) continue;
+        const box = measureTextToSize(node, element);
+        if (box) boxes.set(element.id, box);
+        continue;
+      }
+      if (this.editingId) continue;
+      if (element.type !== 'text' || !element.table?.autoHeight || element.autoFit) continue;
         const table = this.slideLayer.querySelector<HTMLTableElement>(
           `[data-element-id="${CSS.escape(element.id)}"] .text-content > table`,
         );
-        const height = Math.ceil(table?.offsetHeight ?? 0);
-        if (height >= 8 && Math.abs(height - element.h) > 1) heights.set(element.id, height);
+      const height = Math.ceil(table?.offsetHeight ?? 0);
+      if (height >= 8 && Math.abs(height - element.h) > 1) heights.set(element.id, height);
+    }
+    if (heights.size === 0 && boxes.size === 0) return;
+    this.store.commit((deck) => {
+      const current = deck.slides[this.store.get().slideIndex];
+      for (const element of current?.elements ?? []) {
+        const height = heights.get(element.id);
+        if (height !== undefined) element.h = height;
+        const box = boxes.get(element.id);
+        if (box) Object.assign(element, box);
       }
-      if (heights.size === 0 && boxes.size === 0) return;
-      this.store.commit((deck) => {
-        const current = deck.slides[this.store.get().slideIndex];
-        for (const element of current?.elements ?? []) {
-          const height = heights.get(element.id);
-          if (height !== undefined) element.h = height;
-          const box = boxes.get(element.id);
-          if (box) Object.assign(element, box);
-        }
-      }, { label: 'Fit text box', measurement: true });
-    });
+    }, { label: 'Fit text box', measurement: true });
+  }
+
+  /**
+   * The size a text box sized to its text takes with what its node now
+   * holds, written onto `target` — the copy a text commit is changing — so
+   * the box's new size is part of the same edit as the words that made it.
+   */
+  private fitEditedText(target: SlideElement): void {
+    if (target.type !== 'text' || !target.autoSize || target.table) return;
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(target.id)}"]`,
+    );
+    const box = node ? measureTextToSize(node, target) : null;
+    if (box) Object.assign(target, box);
   }
 
   /** Re-measure one table during its active resize transaction. */
@@ -3392,6 +3437,7 @@ export class EditorCanvas {
           target.html = html;
           // Same placeholder retirement as the seal (see sealTextChunk).
           target.class = target.class.filter((name) => name !== 'placeholder');
+          this.fitEditedText(target);
         }
       }, { label: 'Edit text', transient: true, coalesceKey });
       this.textEditStoreBase = html;
@@ -3457,6 +3503,7 @@ export class EditorCanvas {
             // re-entered editing, re-stripped the class, and no number of
             // Ctrl/Cmd+Z presses ever reached the text.
             target.class = target.class.filter((name) => name !== 'placeholder');
+            this.fitEditedText(target);
           }
         }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
         this.textEditStoreBase = html;
@@ -5018,6 +5065,9 @@ export class EditorCanvas {
       // mode; plain text is left in place because restoreRenderedForm detects
       // identical markup.
       this.restoreRenderedForm(current, body);
+      // Nothing re-renders, so nothing else would fit a box sized to its text
+      // to the text it was left holding.
+      this.scheduleTableHeightSync();
       // Live formatting/table commits already recorded the authored change.
       // Do not add a second no-op history entry when edit mode finishes; one
       // real Ctrl/Cmd+Z must undo one real formatting click.
@@ -5029,6 +5079,7 @@ export class EditorCanvas {
       if (el) {
         el.html = html;
         el.class = el.class.filter((name) => name !== 'placeholder');
+        this.fitEditedText(el);
       }
     }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
   }
@@ -5709,6 +5760,7 @@ export class EditorCanvas {
         // A formatting click is a real edit too: retire placeholder status
         // inside this entry (see sealTextChunk for the undo-jam this avoids).
         target.class = target.class.filter((name) => name !== 'placeholder');
+        this.fitEditedText(target);
       }
     }, { label, coalesceKey, historyGroup: `text:${elementId}` });
     this.textEditStoreBase = html;
