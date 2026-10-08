@@ -2630,7 +2630,7 @@ describe('quadratic curved arrows', () => {
       `[data-element-id="${arrow.id}"] svg > path`,
     )!;
     expect(path.getAttribute('d')).toContain(' Q ');
-    expect(path.getAttribute('marker-end')).toContain('arrowhead-');
+    expect(host.querySelectorAll(`[data-element-id="${arrow.id}"] svg > path.arrowhead`)).toHaveLength(1);
     expect(host.querySelector('.handle-curve-control')).not.toBeNull();
   });
 

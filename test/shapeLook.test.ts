@@ -90,25 +90,63 @@ describe('the curl class', () => {
   });
 });
 
-describe('arrowhead size', () => {
+describe('arrowheads', () => {
   const arrow = (over: Partial<Shape> = {}) => rect({
     shape: 'arrow', w: 400, h: 2, fill: null, stroke: '#111111', strokeWidth: 4, arrowEnd: true, ...over,
   });
-  const markerSize = (svg: string) => Number(/markerWidth="([\d.]+)"/.exec(svg)?.[1]);
+  /** The drawn head triangles and the line, as numbers. */
+  const parts = (svg: string) => {
+    const heads = [...svg.matchAll(/class="arrowhead" d="M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) Z"/g)]
+      .map((m) => m.slice(1).map(Number));
+    const line = /<line x1="([\d.-]+)" y1="[\d.-]+" x2="([\d.-]+)"/.exec(svg)?.slice(1).map(Number) ?? null;
+    return { heads, line };
+  };
+  /** A head's length: tip to the midpoint of its base. */
+  const length = ([tx, ty, ax, ay, bx, by]: number[]) => Math.hypot(tx - (ax + bx) / 2, ty - (ay + by) / 2);
 
   it('follows the line width by default, as before', () => {
     expect(arrowHeadSize(arrow())).toBe(24);
-    expect(markerSize(shapeSvg(arrow()))).toBe(24);
-    expect(shapeSvg(arrow())).toContain('markerUnits="userSpaceOnUse"');
+    const { heads } = parts(shapeSvg(arrow()));
+    expect(heads).toHaveLength(1);
+    expect(length(heads[0])).toBeCloseTo(24, 1);
   });
 
   it('takes an authored size, so a thick line can keep a modest head', () => {
-    expect(markerSize(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 40 })))).toBe(40);
+    expect(length(parts(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 40 }))).heads[0])).toBeCloseTo(40, 1);
   });
 
   it('never draws a head too small to cover the line', () => {
     expect(arrowHeadSize(arrow({ strokeWidth: 12, arrowSize: 10 }))).toBe(36);
-    expect(markerSize(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 10 })))).toBe(36);
+    expect(length(parts(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 10 }))).heads[0])).toBeCloseTo(36, 1);
+  });
+
+  it('puts the tip on the endpoint and stops the line just inside the head, not under it', () => {
+    // A thick line under a small head: the line used to run on to the tip and show past the head.
+    const { heads, line } = parts(shapeSvg(arrow({ strokeWidth: 20, arrowSize: 60, arrowStart: true })));
+    const [end, start] = [heads.find((h) => h[0] > 200)!, heads.find((h) => h[0] < 200)!];
+    expect(end[0]).toBeCloseTo(400, 1);
+    expect(start[0]).toBeCloseTo(0, 1);
+    // Overlapping the bases by a fifth of the head: no gap, and nowhere near the tips.
+    expect(line).toEqual([48, 352]);
+  });
+
+  it("points a curved arrow's head along the curve, its line trimmed along the curve", () => {
+    const curved = arrow({ x: 0, y: 0, control: { x: 200, y: -200 } });
+    const svg = shapeSvg(curved);
+    expect(svg).toContain(' Q ');
+    const [head] = parts(svg).heads;
+    expect(head[0]).toBeCloseTo(400, 1);
+    expect(head[1]).toBeCloseTo(1, 1);
+    // Coming down from the bend, the base is above-left of the tip.
+    expect((head[3] + head[5]) / 2).toBeLessThan(head[1]);
+    const end = /Q [\d.-]+ [\d.-]+ ([\d.-]+) ([\d.-]+)"/.exec(svg)!.slice(1).map(Number);
+    expect(Math.hypot(400 - end[0], 1 - end[1])).toBeCloseTo(24 * 0.8, 0);
+  });
+
+  it('shares a short line between its heads instead of crossing them', () => {
+    const { heads, line } = parts(shapeSvg(arrow({ w: 60, strokeWidth: 20, arrowStart: true })));
+    expect(heads.map(length)).toEqual([expect.closeTo(30, 1), expect.closeTo(30, 1)]);
+    expect(line === null || line[1] <= line[0] + 25).toBe(true);
   });
 
   it('round-trips through the authoring HTML, and stays absent when unset', () => {

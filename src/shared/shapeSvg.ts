@@ -41,18 +41,9 @@ export function shapeSvg(el: Shape): string {
         + ` rx="${Math.max(0, el.w / 2 - inset)}" ry="${Math.max(0, el.h / 2 - inset)}" ${paint}/>`;
       break;
     case 'line':
-    case 'arrow': {
-      const heads = el.shape === 'arrow' || el.arrowEnd || el.arrowStart;
-      if (heads) defs = arrowMarker(markerId, stroke, arrowHeadSize(el));
-      const markers = (el.arrowStart ? ` marker-start="url(#${markerId})"` : '')
-        + (el.arrowEnd || (!el.arrowStart && el.shape === 'arrow')
-          ? ` marker-end="url(#${markerId})"` : '');
-      node = el.control
-        ? `<path d="${quadraticPath(el)}" stroke-linecap="round" stroke-linejoin="round"`
-          + `${markers} ${paint}/>`
-        : `<line x1="0" y1="${el.h / 2}" x2="${el.w}" y2="${el.h / 2}"${markers} ${paint}/>`;
+    case 'arrow':
+      node = lineSvg(el, stroke, paint);
       break;
-    }
     case 'brace':
       node = `<path d="${bracePath(el.w, el.h, braceDepthOf(el))}" stroke-linecap="round"`
         + ` stroke-linejoin="round" ${paint}/>`;
@@ -80,6 +71,123 @@ export function shapeSvg(el: Shape): string {
   return `<svg width="100%" height="100%" viewBox="0 0 ${view.w} ${view.h}"`
     + ' preserveAspectRatio="none" style="display:block; overflow:visible">'
     + `${defs}${node}</svg>`;
+}
+
+type XY = { x: number; y: number };
+
+/**
+ * A line or arrow: the stroke, plus a filled triangle for each head.
+ *
+ * A head's tip sits exactly on its endpoint, pointing along the line there,
+ * and the stroke stops just past the head's base rather than running on
+ * underneath it. An SVG marker cannot do that — it is painted over a line
+ * that still reaches the endpoint, and near the head's narrow tip a thick
+ * line is wider than the head, so it showed past it. The stroke overlaps the
+ * base by a fifth of the head, so there is never a hairline gap between them;
+ * that overlap (and a round line end) stays inside the triangle for any head
+ * at least ~1.9 stroke widths long, and heads are never drawn under three.
+ */
+function lineSvg(el: Shape, stroke: string, paint: string): string {
+  const startHead = el.arrowStart;
+  const endHead = el.arrowEnd || (!el.arrowStart && el.shape === 'arrow');
+  const p0 = { x: 0, y: el.h / 2 };
+  const p2 = { x: el.w, y: el.h / 2 };
+  const local = el.control ? quadraticControl(el) : null;
+  const p1 = local ?? { x: el.w / 2, y: el.h / 2 };
+  const at = (t: number): XY => quadraticPoint(p0, p1, p2, t);
+  // Heads share the line's length when it is too short for them at full
+  // size: two meet at its middle, one spans it, rather than crossing over.
+  const heads0 = Number(startHead) + Number(endHead);
+  const span = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+  const size = heads0 > 0 ? Math.min(arrowHeadSize(el), span / heads0) : 0;
+  const trim = size * 0.8;
+  const heads: string[] = [];
+  let t0 = 0;
+  let t1 = 1;
+  if (startHead) {
+    heads.push(headPath(p0, at(paramAtDistance(at, 0, size)), size));
+    t0 = paramAtDistance(at, 0, trim);
+  }
+  if (endHead) {
+    heads.push(headPath(p2, at(paramAtDistance(at, 1, size)), size));
+    t1 = paramAtDistance(at, 1, trim);
+  }
+  const n = (value: number): string => String(Math.round(value * 100) / 100 + 0);
+  let line = '';
+  // Heads that meet leave no line to draw between them.
+  if (t1 > t0) {
+    const a = at(t0);
+    const b = at(t1);
+    if (local) {
+      // The piece of the curve between t0 and t1 is itself a quadratic.
+      const c = quadraticBlossom(p0, p1, p2, t0, t1);
+      line = `<path d="M ${n(a.x)} ${n(a.y)} Q ${n(c.x)} ${n(c.y)} ${n(b.x)} ${n(b.y)}"`
+        + ` stroke-linecap="round" stroke-linejoin="round" ${paint}/>`;
+    } else {
+      line = `<line x1="${n(a.x)}" y1="${n(a.y)}" x2="${n(b.x)}" y2="${n(b.y)}" ${paint}/>`;
+    }
+  }
+  return line + heads.map((d) => `<path class="arrowhead" d="${d}" fill="${stroke}" stroke="none"/>`).join('');
+}
+
+/** A head: tip at `tip`, its base centred `size` back toward `back`, as wide as it is long. */
+function headPath(tip: XY, back: XY, size: number): string {
+  const dx = tip.x - back.x;
+  const dy = tip.y - back.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const ux = dx / length;
+  const uy = dy / length;
+  const base = { x: tip.x - ux * size, y: tip.y - uy * size };
+  const half = size / 2;
+  const n = (value: number): string => String(Math.round(value * 100) / 100 + 0);
+  return `M ${n(tip.x)} ${n(tip.y)} L ${n(base.x - uy * half)} ${n(base.y + ux * half)}`
+    + ` L ${n(base.x + uy * half)} ${n(base.y - ux * half)} Z`;
+}
+
+function quadraticPoint(p0: XY, p1: XY, p2: XY, t: number): XY {
+  const u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
+    y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y,
+  };
+}
+
+/** The control point of the quadratic's piece between `a` and `b` (its blossom). */
+function quadraticBlossom(p0: XY, p1: XY, p2: XY, a: number, b: number): XY {
+  const w0 = (1 - a) * (1 - b);
+  const w1 = (1 - a) * b + a * (1 - b);
+  const w2 = a * b;
+  return { x: w0 * p0.x + w1 * p1.x + w2 * p2.x, y: w0 * p0.y + w1 * p1.y + w2 * p2.y };
+}
+
+/**
+ * The parameter of the point `distance` (straight-line) from the end at
+ * `from` (0 or 1), searched toward the other end. A curve shorter than that
+ * gives the far end.
+ */
+function paramAtDistance(at: (t: number) => XY, from: 0 | 1, distance: number): number {
+  const origin = at(from);
+  const reach = (t: number): number => Math.hypot(at(t).x - origin.x, at(t).y - origin.y);
+  const far = 1 - from;
+  if (reach(far) <= distance) return far;
+  // Walk out until the distance is passed, then bisect that step.
+  const steps = 64;
+  let inside: number = from;
+  for (let i = 1; i <= steps; i++) {
+    const t = from + (far - from) * (i / steps);
+    if (reach(t) >= distance) {
+      let lo = inside;
+      let hi = t;
+      for (let k = 0; k < 24; k++) {
+        const mid = (lo + hi) / 2;
+        if (reach(mid) < distance) lo = mid;
+        else hi = mid;
+      }
+      return (lo + hi) / 2;
+    }
+    inside = t;
+  }
+  return far;
 }
 
 /**
@@ -135,17 +243,25 @@ function arrowMarker(id: string, color: string, size: number): string {
     + ` orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="${color}"/></marker></defs>`;
 }
 
-/** Quadratic Bézier path in the rotated line element's local coordinates. */
-export function quadraticPath(el: Shape): string {
-  if (!el.control) return '';
+/** A curved line's canvas-space control point, in its rotated element's own coordinates. */
+function quadraticControl(el: Shape): XY | null {
+  if (!el.control) return null;
   const cx = el.x + el.w / 2;
   const cy = el.y + el.h / 2;
   const radians = (el.rot * Math.PI) / 180;
   const dx = el.control.x - cx;
   const dy = el.control.y - cy;
-  const localX = dx * Math.cos(radians) + dy * Math.sin(radians) + el.w / 2;
-  const localY = -dx * Math.sin(radians) + dy * Math.cos(radians) + el.h / 2;
-  return `M 0 ${el.h / 2} Q ${localX} ${localY} ${el.w} ${el.h / 2}`;
+  return {
+    x: dx * Math.cos(radians) + dy * Math.sin(radians) + el.w / 2,
+    y: -dx * Math.sin(radians) + dy * Math.cos(radians) + el.h / 2,
+  };
+}
+
+/** Quadratic Bézier path in the rotated line element's local coordinates. */
+export function quadraticPath(el: Shape): string {
+  const control = quadraticControl(el);
+  if (!control) return '';
+  return `M 0 ${el.h / 2} Q ${control.x} ${control.y} ${el.w} ${el.h / 2}`;
 }
 
 function escapeAttr(value: string): string {

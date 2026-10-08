@@ -217,6 +217,8 @@ export class Inspector {
   private lastSlideSelection = '';
   /** Keep the opacity slider mounted while its live drag updates the deck. */
   private continuousEdit = false;
+  /** The slide and selection the panel was last built for; see `render`. */
+  private lastRenderShown = '';
   private morphHost = document.createElement('section');
   private morphPanel: MorphPanel;
   /** Enter the dedicated editor for the three fixed layout masters. */
@@ -298,7 +300,17 @@ export class Inspector {
     // Remember the focused control and give the rebuilt panel's equivalent
     // control the keyboard back.
     const focused = this.captureFocusedControl();
+    // A rebuild empties the panel for a moment, which scrolls whatever holds
+    // it back to the top: changing a value far down the panel threw the
+    // author back to Geometry. While the panel still shows the same objects,
+    // put every scrolled ancestor back where it was; a new selection starts
+    // at the top as before.
+    const { selection, slideIndex } = this.store.get();
+    const shown = `${slideIndex}|${[...selection].sort().join(',')}`;
+    const scrolled = shown === this.lastRenderShown ? scrolledAncestors(this.host) : [];
+    this.lastRenderShown = shown;
     this.renderPanel();
+    for (const [node, top] of scrolled) node.scrollTop = top;
     this.restoreFocusedControl(focused);
   }
 
@@ -2866,6 +2878,15 @@ function smallButton(label: string, title: string, onClick: () => void): HTMLBut
   control.title = title;
   control.addEventListener('click', onClick);
   return control;
+}
+
+/** The panel and every ancestor that is scrolled away from its top, with how far. */
+function scrolledAncestors(node: HTMLElement): Array<[HTMLElement, number]> {
+  const found: Array<[HTMLElement, number]> = [];
+  for (let at: HTMLElement | null = node; at; at = at.parentElement) {
+    if (at.scrollTop > 0) found.push([at, at.scrollTop]);
+  }
+  return found;
 }
 
 export function numberField(
