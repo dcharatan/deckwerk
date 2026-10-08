@@ -3861,9 +3861,43 @@ describe('resizing pictures and videos', () => {
     expect(dragCorner('image-1', 200, 10, true)).toMatchObject({ w: 600, h: 310 });
   });
 
+  it('keeps the pointer on the box\'s edge wherever a corner is dragged', () => {
+    // The picture is 400x300 with its south-east corner at (1600, 600), so
+    // the anchor is (1200, 300). Snapping may pull the box off the pointer by
+    // up to its 6px reach (plus a pixel of rounding), never more.
+    const reach = 7;
+    const offsets = [-500, -380, -260, -140, -20, 100, 220, 340];
+    for (const dx of offsets) {
+      for (const dy of offsets) {
+        const px = 1600 + dx;
+        const py = 600 + dy;
+        const box = dragCorner('image-1', dx, dy);
+        const where = `pointer (${px}, ${py}) -> ${JSON.stringify({ x: box.x, y: box.y, w: box.w, h: box.h })}`;
+        expect([box.x, box.y], where).toEqual([1200, 300]);
+        if (px <= 1200 || py <= 300) {
+          // Past the anchor on either axis: as small as it goes, in proportion.
+          expect([box.w, box.h], where).toEqual([11, 8]);
+          continue;
+        }
+        const right = box.x + box.w;
+        const bottom = box.y + box.h;
+        expect(px, where).toBeLessThanOrEqual(right + reach);
+        expect(py, where).toBeLessThanOrEqual(bottom + reach);
+        expect(Math.min(Math.abs(right - px), Math.abs(bottom - py)), where).toBeLessThanOrEqual(reach);
+        expect(box.w / box.h, where).toBeCloseTo(4 / 3, 1);
+        // Freed with Shift, the corner is under the pointer, or at the minimum.
+        const free = dragCorner('image-1', dx, dy, true);
+        expect(Math.abs(free.x + free.w - Math.max(px, 1208)), where).toBeLessThanOrEqual(reach);
+        expect(Math.abs(free.y + free.h - Math.max(py, 308)), where).toBeLessThanOrEqual(reach);
+      }
+    }
+  });
+
   it('still resizes a text box freely, with Shift to keep its proportions', () => {
     expect(dragCorner('text-1', 200, 60)).toMatchObject({ w: 800, h: 180 });
-    expect(dragCorner('text-1', 200, 60, true)).toMatchObject({ w: 800, h: 160 });
+    // 60 of 120 is more of the height than 200 of 600 is of the width, so
+    // the height leads and the box reaches the pointer.
+    expect(dragCorner('text-1', 200, 60, true)).toMatchObject({ w: 900, h: 180 });
   });
 });
 

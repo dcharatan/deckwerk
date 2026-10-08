@@ -149,6 +149,8 @@ function isCommandModifierKey(key: string): boolean {
 }
 
 const SNAP_SCREEN_PX = 6;
+/** The smallest a resize handle makes a box, in canvas pixels. */
+const MIN_RESIZE = 8;
 /** Forgiving screen-space target around a visible line or arrow. */
 const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
@@ -627,7 +629,6 @@ type DragMode =
       origin: Rect;
       origins: Map<string, ResizeOrigin>;
       elementId: string;
-      aspect: number;
     }
   | {
       kind: 'table-column-resize';
@@ -2393,7 +2394,6 @@ export class EditorCanvas {
           origin: { x: el.x, y: el.y, w: el.w, h: el.h },
           origins,
           elementId: el.id,
-          aspect: el.w / el.h,
         };
         return;
       }
@@ -2694,7 +2694,11 @@ export class EditorCanvas {
         const constrained = media
           ? resizing.maskShape === 'circle' || !ev.shiftKey
           : ev.shiftKey;
-        if (constrained) rect = constrainAspect(rect, o, edges, drag.aspect);
+        // Where the pointer is: the box a free resize would make.
+        const pointerRect = rect;
+        rect = constrained
+          ? constrainAspect(rect, o, edges)
+          : clampResize(rect, o, edges);
 
         // Guides align to what is on screen, which for a rotated neighbour is
         // its rotated bounding box, not its unrotated one.
@@ -2705,14 +2709,13 @@ export class EditorCanvas {
         // nothing meaningful to snap them to; snapping it would only nudge the
         // box away from the pointer. Alt suspends snapping outright.
         const snapped = ev.altKey || radians
-          ? { rect, guides: [], spacing: [], sizes: [] }
-          : snapResize(rect, edges, deck.canvas, others, threshold);
+          ? { rect, guides: [] }
+          : constrained
+            ? snapAspectResize(rect, pointerRect, o, edges, deck.canvas, others, threshold)
+            : snapResize(rect, edges, deck.canvas, others, threshold);
         this.guides = snapped.guides;
 
         let r = { ...snapped.rect };
-        // Snapping moves a single edge, which breaks the ratio the constraint
-        // just imposed. Re-impose it so a keep-aspect resize cannot distort.
-        if (constrained) r = constrainAspect(r, o, edges, drag.aspect);
         if (centered) {
           // Aspect constraints and snapping anchor the opposite corner, which
           // would drift the center — pin it back to where the drag started.
@@ -7248,27 +7251,87 @@ function intersects(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-/**
- * Force a resize back onto the original aspect ratio, keeping the anchor corner
- * (the one opposite the handle) fixed.
- */
-function constrainAspect(
-  rect: Rect,
-  origin: Rect,
-  edges: { left: boolean; right: boolean; top: boolean; bottom: boolean },
-  aspect: number,
-): Rect {
-  const out = { ...rect };
-  // Drive from whichever dimension the handle changed more, so the box tracks
-  // the cursor rather than snapping to one axis.
-  const dw = Math.abs(rect.w - origin.w);
-  const dh = Math.abs(rect.h - origin.h);
-  if (dw >= dh) out.h = out.w / aspect;
-  else out.w = out.h * aspect;
+type Edges = { left: boolean; right: boolean; top: boolean; bottom: boolean };
 
+/** Keep `rect` at its size but put it back against the anchor (opposite) edges. */
+function anchored(rect: Rect, origin: Rect, edges: Edges): Rect {
+  const out = { ...rect };
   if (edges.left) out.x = origin.x + origin.w - out.w;
   if (edges.top) out.y = origin.y + origin.h - out.h;
   return out;
+}
+
+/**
+ * A free resize, held at the minimum size on every axis the handle moves. A
+ * pointer dragged past the opposite edge leaves the box at its smallest
+ * rather than turning it inside out.
+ */
+function clampResize(rect: Rect, origin: Rect, edges: Edges): Rect {
+  const out = { ...rect };
+  if ((edges.left || edges.right) && out.w < MIN_RESIZE) out.w = Math.min(MIN_RESIZE, origin.w);
+  if ((edges.top || edges.bottom) && out.h < MIN_RESIZE) out.h = Math.min(MIN_RESIZE, origin.h);
+  return anchored(out, origin, edges);
+}
+
+/**
+ * Put a resize back on the original proportions, anchored at the edges
+ * opposite the handle. `rect` is the box a free resize would have made — the
+ * pointer is on its moving edges — and the result is the smallest box in
+ * proportion that still reaches the pointer: the larger of the two scales, so
+ * the pointer always sits on the box's boundary, never outside it. Dragging a
+ * corner past the anchor on either axis is a box of negative size; that holds
+ * the box at its minimum. `drive` scales from one axis's size instead (a snap
+ * that has just set it).
+ */
+function constrainAspect(rect: Rect, origin: Rect, edges: Edges, drive?: 'x' | 'y'): Rect {
+  const sx = rect.w / origin.w;
+  const sy = rect.h / origin.h;
+  const movesX = edges.left || edges.right;
+  const movesY = edges.top || edges.bottom;
+  let scale: number;
+  if (drive) scale = drive === 'x' ? sx : sy;
+  else if (movesX && movesY) scale = Math.min(sx, sy) <= 0 ? 0 : Math.max(sx, sy);
+  else scale = movesX ? sx : sy;
+  scale = Math.max(scale, Math.min(1, MIN_RESIZE / Math.min(origin.w, origin.h)));
+  return anchored({ ...rect, w: origin.w * scale, h: origin.h * scale }, origin, edges);
+}
+
+/**
+ * Snap a keep-aspect resize. Snapping one edge on its own would break the
+ * ratio, and re-imposing the ratio from the other axis would throw the snap
+ * away while its guide stayed up. So each moving axis is snapped on its own
+ * and the whole box is scaled to that axis's snap. A snap may pull the box
+ * off the pointer by no more than the snap distance: the pointer rides the
+ * leading edge (the one `constrainAspect` scaled from), so a snap on the other
+ * axis counts by how far it moves the leading edge — on a wide picture a few
+ * pixels of height are many of width. The candidate that moves it least wins.
+ */
+function snapAspectResize(
+  rect: Rect,
+  pointerRect: Rect,
+  origin: Rect,
+  edges: Edges,
+  canvas: { w: number; h: number },
+  others: Rect[],
+  threshold: number,
+): { rect: Rect; guides: SnapLine[] } {
+  const lead: 'x' | 'y' = Math.abs(rect.w - pointerRect.w) <= Math.abs(rect.h - pointerRect.h) ? 'x' : 'y';
+  let best: { rect: Rect; guides: SnapLine[]; cost: number } | null = null;
+  for (const axis of ['x', 'y'] as const) {
+    const moving = axis === 'x' ? edges.left || edges.right : edges.top || edges.bottom;
+    if (!moving) continue;
+    const only = axis === 'x'
+      ? { ...edges, top: false, bottom: false }
+      : { ...edges, left: false, right: false };
+    const { rect: snapped, guides } = snapResize(rect, only, canvas, others, threshold, MIN_RESIZE);
+    const next = constrainAspect(snapped, origin, edges, axis);
+    const cost = lead === 'x' ? Math.abs(next.w - rect.w) : Math.abs(next.h - rect.h);
+    // Neither an alignment nor a size match: this axis has nothing to offer.
+    if (guides.length === 0 && (axis === 'x' ? snapped.w === rect.w : snapped.h === rect.h)) continue;
+    if (cost > threshold || (best && best.cost <= cost)) continue;
+    best = { rect: next, guides, cost };
+  }
+  return best ?? { rect, guides: [] };
 }
 
 /**
