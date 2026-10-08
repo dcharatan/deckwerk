@@ -1024,7 +1024,8 @@ function syncSlideSelectionContext(): void {
 /* --- element creation --- */
 
 function addText(): void {
-  insertText(store);
+  // Straight into the new box, its placeholder selected: typing replaces it.
+  canvas.beginTextEdit(insertText(store).id);
 }
 
 /* --- persistence --- */

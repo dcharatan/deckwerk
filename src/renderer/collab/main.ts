@@ -894,7 +894,8 @@ function buildToolbar(): void {
   const mid = document.createElement('div');
   mid.className = 'bar-group bar-center';
   mid.append(
-    barIconButton('Text', TEXT_ICON, () => insertText(store)),
+    // Straight into the new box, its placeholder selected: typing replaces it.
+    barIconButton('Text', TEXT_ICON, () => canvas.beginTextEdit(insertText(store).id)),
     createShapeInsertPicker(store),
     createTableInsertPicker(store),
   );

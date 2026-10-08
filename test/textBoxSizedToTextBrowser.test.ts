@@ -53,7 +53,7 @@ const FIT = `(() => {
 })()`;
 
 describe.skipIf(!electronBinary)('a text box sized to its text', () => {
-  it('hugs its text when created, while typing, and after the edit commits', {
+  it('opens for typing when created, and hugs its text while typing and after the edit commits', {
     timeout: 120_000,
   }, async () => {
     desktop = await launchDesktopEditor('body-text', '<p>Body copy</p>');
@@ -67,7 +67,9 @@ describe.skipIf(!electronBinary)('a text box sized to its text', () => {
     })()`);
     await cdp.clickAt(button.x, button.y);
 
-    // Created at a placeholder size, then measured down to "New text".
+    // Created at a placeholder size, then measured down to "New text" — and
+    // already open for editing with the placeholder selected, so the next
+    // keystrokes replace it without a double-click.
     const created = (await eventually(async () => {
       const fit = await cdp.evaluate<Fit | null>(FIT);
       return fit && Math.abs(fit.boxW - fit.textW) <= 2 && Math.abs(fit.boxH - fit.textH) <= 2
@@ -75,17 +77,12 @@ describe.skipIf(!electronBinary)('a text box sized to its text', () => {
     }, 'the new text box never shrank to its text'))!;
     expect(created.boxW).toBeLessThan(400);
     expect(created.lines).toBe(1);
-
-    // Enter the edit (a placeholder selects all) and type over it.
-    const centre = await cdp.evaluate<{ x: number; y: number }>(`(() => {
-      const rect = document.querySelector('#canvas [data-element-id="${created.id}"]')
-        .getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`);
-    await cdp.doubleClickAt(centre.x, centre.y);
-    await eventually(async () => (await cdp.evaluate<Fit | null>(FIT))?.editing,
-      'double-clicking the label did not open it for editing');
+    expect(created.editing).toBe(true);
+    expect(await cdp.evaluate<string>('String(window.getSelection())')).toBe('New text');
     await cdp.typeKeys('A considerably longer label than before');
+    expect(await cdp.evaluate<string>(
+      `document.querySelector('#canvas [data-element-id="${created.id}"] .text-content').textContent`,
+    )).toBe('A considerably longer label than before');
 
     // The box follows the text on every keystroke, without wrapping it.
     const typing = await cdp.evaluate<Fit>(FIT);
