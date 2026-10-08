@@ -4,9 +4,11 @@ import type { AgentOperation } from './agent.js';
 /**
  * Structural diff of two decks into the agent op vocabulary, keyed entirely by
  * stable slide/element ids. Applying the result to `prev` with lenient (or
- * strict) semantics reproduces `next`, up to element array order — which is
- * not load-bearing: render order is governed by `z`, and replaceElement
- * preserves array position.
+ * strict) semantics reproduces `next`. Element array order matters as well
+ * as `z` — objects of equal `z` paint in array order — so replaceElement keeps
+ * an element's position and an inserted element is anchored after its
+ * predecessor in `next`; only a reorder of surviving elements is not
+ * expressed.
  *
  * The inverse of diffDecks(prev, next) is simply diffDecks(next, prev); the
  * collab undo layer relies on that.
@@ -151,10 +153,27 @@ function diffSlide(prev: Slide, next: Slide): AgentOperation[] {
     });
   }
 
-  const added = nextElements.filter((element) => !prevById.has(element.id));
-  if (added.length > 0) {
-    ops.push({ op: 'insertElements', slideId: next.id, elements: structuredClone(added) });
-  }
+  // Runs of new elements, each anchored on the element just before it in
+  // `next` — a survivor, or the end of an earlier run (already inserted, since
+  // runs are emitted left to right).
+  let run: typeof nextElements = [];
+  let runAnchor: string | null = null;
+  const flush = () => {
+    if (run.length === 0) return;
+    ops.push({
+      op: 'insertElements', slideId: next.id, elements: structuredClone(run), afterElementId: runAnchor,
+    });
+    run = [];
+  };
+  nextElements.forEach((element, i) => {
+    if (prevById.has(element.id)) {
+      flush();
+      return;
+    }
+    if (run.length === 0) runAnchor = i === 0 ? null : nextElements[i - 1].id;
+    run.push(element);
+  });
+  flush();
 
   for (const element of nextElements) {
     const before = prevById.get(element.id);

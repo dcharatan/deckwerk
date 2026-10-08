@@ -303,7 +303,7 @@ export async function startCrossSession(deckId: string, name: string): Promise<{
   ), 'the cross-context fixture never loaded');
   await cdp.evaluate(ERROR_TRAP);
 
-  const session = buildSession(cdp);
+  const session = buildSession(cdp, deck.slides);
   return {
     session,
     close: async () => {
@@ -318,7 +318,7 @@ export async function startCrossSession(deckId: string, name: string): Promise<{
   };
 }
 
-function buildSession(cdp: Cdp): CrossSession {
+function buildSession(cdp: Cdp, startingSlides: unknown[]): CrossSession {
   const session: CrossSession = {
     cdp,
     async reset() {
@@ -330,9 +330,11 @@ function buildSession(cdp: Cdp): CrossSession {
         await wait(80);
       }
       await cdp.evaluate(`(() => {
+        // The whole slide list, not just the elements: a walk may have
+        // confirmed deleting both slides and then redone that after its undo,
+        // which legitimately leaves one blank slide with a new id.
         window.store.commit((deck) => {
-          deck.slides[0].elements = ${JSON.stringify(startingElements())};
-          deck.slides[1].elements = ${JSON.stringify([secondSlideElement()])};
+          deck.slides = ${JSON.stringify(startingSlides)};
         }, { label: 'Cross-context fixture' });
         window.store.selectSlide(0);
         window.store.clearSelection();

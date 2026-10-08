@@ -783,7 +783,7 @@ Operations, applied in array order:
 | `replaceSlide` | Replace a slide wholesale, including its `timeline` |
 | `deleteSlide` | Remove a slide (a deck must keep at least one) |
 | `moveSlide` | Move a slide after `afterSlideId` (`null` = to the start) |
-| `insertElements` | Append elements to a slide |
+| `insertElements` | Add elements to a slide: after `afterElementId`, first when it is `null`, appended when it is omitted |
 | `replaceElement` | Replace one element; its `id` must not change |
 | `deleteElements` | Remove elements and any timeline entries referencing them |
 | `updateDeck` | `title`, `morphEasing` |

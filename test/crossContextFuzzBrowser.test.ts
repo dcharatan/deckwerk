@@ -70,6 +70,14 @@ function random(seed: number): () => number {
   };
 }
 
+/**
+ * Element ids an op legitimately created and then undid within itself — the
+ * blank slide a confirmed whole-deck delete leaves. A later redo, in this walk
+ * or (the walks share one history) a later one, may bring them back, and that
+ * is not undo materialising something new.
+ */
+const producedIds = new Set<string>();
+
 const pick = <T,>(next: () => number, list: T[]): T =>
   list[Math.floor(next() * list.length)];
 
@@ -214,7 +222,7 @@ describe.skipIf(!electronBinary)('cross-context fuzz over three elements and two
           break;
         }
         if (censusMode === 'resync') {
-          const foreign = ids.filter((id) => !everKnown.has(id));
+          const foreign = ids.filter((id) => !everKnown.has(id) && !producedIds.has(id));
           if (foreign.length > 0) {
             flag('census', `undo/redo materialised never-seen elements: [${foreign.join(', ')}]`);
             break;
@@ -607,6 +615,7 @@ async function performOp(
       await wait(250);
       const slides = await session.cdp.evaluate<number>('window.store.get().deck.slides.length');
       if (slides !== 1) flag('census', `confirming deletion of the whole deck left ${slides} slides, not one blank slide`);
+      for (const id of await session.allElementIds()) producedIds.add(id);
       await session.chord('z', 'KeyZ', 90, MOD);
       await wait(300);
       if (await snapshot() !== before) {

@@ -26,7 +26,7 @@ export interface LenientApplyResult {
  *   remaining slide → skip.
  * - moveSlide: slide or anchor gone → skip (slide stays put).
  * - insertElements: target slide gone → skip; elements whose id already
- *   exists deck-wide are dropped.
+ *   exists deck-wide are dropped; a vanished `afterElementId` appends.
  * - insertSlides: slides whose id already exists are dropped; a vanished
  *   anchor appends at the end rather than discarding the user's new slide.
  * - updateDeck: always applies.
@@ -207,7 +207,12 @@ function applyLenient(
       for (const slide of draft.slides) for (const element of slide.elements) existing.add(element.id);
       const fresh = op.elements.filter((element) => !existing.has(element.id));
       if (fresh.length === 0) return skip(op, 'all element ids already present');
-      draft.own(at).elements.push(...fresh.map(admitElement));
+      const elements = draft.own(at).elements;
+      const anchor = op.afterElementId === undefined || op.afterElementId === null
+        ? -1
+        : elements.findIndex((element) => element.id === op.afterElementId);
+      const index = op.afterElementId === null ? 0 : anchor === -1 ? elements.length : anchor + 1;
+      elements.splice(index, 0, ...fresh.map(admitElement));
       return;
     }
     case 'replaceElement': {

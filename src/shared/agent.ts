@@ -112,6 +112,12 @@ const InsertElementsOperation = z.object({
   op: z.literal('insertElements'),
   slideId: z.string(),
   elements: z.array(ElementSchema).min(1),
+  /**
+   * Where in the slide's element array they go: after this element, or first
+   * when null. Omitted, they are appended. Objects of equal `z` paint in array
+   * order, so an undone delete has to come back to its old place, not the end.
+   */
+  afterElementId: z.string().nullable().optional(),
 });
 const ReplaceElementOperation = z.object({
   op: z.literal('replaceElement'),
@@ -307,9 +313,17 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
       deck.slides.splice(at, 0, slide);
       return;
     }
-    case 'insertElements':
-      requireSlide(deck, operation.slideId).elements.push(...structuredClone(operation.elements));
+    case 'insertElements': {
+      const slide = requireSlide(deck, operation.slideId);
+      const at = operation.afterElementId === undefined
+        ? slide.elements.length
+        : operation.afterElementId === null
+          ? 0
+          : slide.elements.findIndex((element) => element.id === operation.afterElementId) + 1;
+      if (at === 0 && operation.afterElementId) throw new Error(`Unknown element id: ${operation.afterElementId}`);
+      slide.elements.splice(at, 0, ...structuredClone(operation.elements));
       return;
+    }
     case 'replaceElement': {
       const slide = requireSlide(deck, operation.slideId);
       const at = slide.elements.findIndex((element) => element.id === operation.elementId);
