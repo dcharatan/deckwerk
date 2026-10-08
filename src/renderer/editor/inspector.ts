@@ -923,8 +923,8 @@ export class Inspector {
   /**
    * Arrowhead size: blank follows the line's width (six stroke widths), a
    * number fixes the head's length so a thick line can keep a modest head.
-   * A size too small for the line is kept as typed but drawn at the floor
-   * (`arrowHeadSize`), so thickening the line later never buries its head.
+   * A size shorter than the line is wide is kept as typed but drawn at the
+   * line's width (`arrowHeadSize`), so thickening the line never buries it.
    */
   private arrowSizeRow(shapes: Array<Extract<SlideElement, { type: 'shape' }>>): HTMLElement {
     const row = document.createElement('div');

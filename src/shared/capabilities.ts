@@ -277,7 +277,7 @@ export function capabilities(): Capability[] {
       notes: [
         'An arrow’s `control` is an absolute canvas-space point making it a quadratic curve.',
         'shape: "path" carries real SVG path data, scaled from pathSize to the element box — this is how imported vector art keeps its geometry.',
-        'arrowStart/arrowEnd put heads on a line or arrow at either end, or both. arrowSize sets the head length in pixels (unset: six stroke widths; never under three), so a thick line can keep a modest head. In HTML: data-arrow-size.',
+        'arrowStart/arrowEnd put heads on a line or arrow at either end, or both. arrowSize sets the head length in pixels (unset: six stroke widths; never less than the line width, which ends the line in a point), so a thick line can keep a modest head. In HTML: data-arrow-size.',
         'A curly brace is shape: "brace", laid out like a line (endpoints at the box\'s left and right centre, rotated by rot). braceDepth is the signed distance from the chord to the point along the element\'s own +y (down when unrotated); half of it is the radius of every curl. In HTML: data-shape="brace" data-brace-depth="40".',
         'A drop shadow is CSS on the element: style: { filter: "drop-shadow(0px 8px 24px rgba(0, 0, 0, 0.3))" }. It follows the shape’s own paint (a line or an outline casts the shadow of its strokes), and Props → Shadow edits the same value.',
         'A gradient fill: fillGradient: { to: "#ec6b14", angle: 270, kind: "linear" } runs from fill to `to`; angle is degrees counter-clockwise from the right (270 = top to bottom); kind "radial" spreads from the centre. In HTML: data-fill-to, data-fill-angle, data-fill-gradient.',

@@ -20,9 +20,10 @@ import { collabClientDir } from './support/collabClient.js';
 
 /**
  * Shift frees a picture's or a video's proportions while it is resized, and a
- * freed one squashes with its box. A fitted (cover/contain) one used to keep
- * re-fitting instead — the box changed shape and the picture inside did not —
- * so its framing becomes a crop the drag can stretch. Real media, real input.
+ * freed one squashes with its box: it fills the box exactly, so the box is
+ * always the picture. A fitted (cover/contain) one used to keep re-fitting
+ * instead — the box changed shape and the picture inside did not. Real media,
+ * real input.
  */
 const DECK_ID = 'stretch';
 
@@ -126,12 +127,14 @@ describe.skipIf(!electronBinary)('Shift-resizing pictures and videos', () => {
       const freed = await drawn(id);
       expect(freed.box, id).toBeGreaterThan(before.box * 1.5);
       expect(freed.media / (160 / 90), `${id} was not stretched`).toBeGreaterThan(1.4);
+      // The box is the picture: it fills the box exactly, no crop, no bars.
+      expect(freed.media, id).toBeCloseTo(freed.box, 2);
       const saved = await eventually(async () => {
         const response = await fetch(`http://127.0.0.1:${server!.port}/api/deck?deck=${DECK_ID}`);
         const el = (await response.json() as Deck).slides[0].elements.find((e) => e.id === id);
-        return el && 'sourceBox' in el && el.sourceBox ? el.sourceBox : null;
+        return el && 'fit' in el && el.fit === 'fill' ? el : null;
       }, `${id}'s stretch never reached the deck`);
-      expect(saved!.w / saved!.h).toBeCloseTo(freed.media, 1);
+      expect('sourceBox' in saved! ? saved.sourceBox : null).toBeNull();
     }
   });
 });

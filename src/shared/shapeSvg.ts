@@ -76,16 +76,17 @@ export function shapeSvg(el: Shape): string {
 type XY = { x: number; y: number };
 
 /**
- * A line or arrow: the stroke, plus a filled triangle for each head.
+ * A line or arrow: the stroke, plus a filled head at each arrowed end.
  *
  * A head's tip sits exactly on its endpoint, pointing along the line there,
- * and the stroke stops just past the head's base rather than running on
+ * and the stroke stops just behind the head's base rather than running on
  * underneath it. An SVG marker cannot do that — it is painted over a line
  * that still reaches the endpoint, and near the head's narrow tip a thick
- * line is wider than the head, so it showed past it. The stroke overlaps the
- * base by a fifth of the head, so there is never a hairline gap between them;
- * that overlap (and a round line end) stays inside the triangle for any head
- * at least ~1.9 stroke widths long, and heads are never drawn under three.
+ * line is wider than the head, so it showed past it. So that the two never
+ * part by a hairline, each head carries a short tail exactly as wide as the
+ * line, which the line's (square) end overlaps: nothing of the line reaches
+ * the triangle's sloping sides, even for the smallest head, one as wide as
+ * the line itself. A curved line keeps its round end where it has no head.
  */
 function lineSvg(el: Shape, stroke: string, paint: string): string {
   const startHead = el.arrowStart;
@@ -100,16 +101,27 @@ function lineSvg(el: Shape, stroke: string, paint: string): string {
   const heads0 = Number(startHead) + Number(endHead);
   const span = Math.hypot(p2.x - p0.x, p2.y - p0.y);
   const size = heads0 > 0 ? Math.min(arrowHeadSize(el), span / heads0) : 0;
-  const trim = size * 0.8;
+  // The tail behind each head's base, and where the line stops inside it.
+  const width = Math.min(Math.max(el.strokeWidth, 0), size);
+  const tail = Math.min(Math.max(el.strokeWidth, 0), 2);
+  const trim = size + tail / 2;
   const heads: string[] = [];
   let t0 = 0;
   let t1 = 1;
+  // A head points the way the line runs where it meets the head's base, so
+  // on a curve the line's end and the head's tail line up without a kink.
+  const along = (t: number, toward: XY): XY => {
+    const d = quadraticTangent(p0, p1, p2, t);
+    const base = at(t);
+    const sign = d.x * (toward.x - base.x) + d.y * (toward.y - base.y) < 0 ? -1 : 1;
+    return { x: base.x - sign * d.x, y: base.y - sign * d.y };
+  };
   if (startHead) {
-    heads.push(headPath(p0, at(paramAtDistance(at, 0, size)), size));
+    heads.push(headPath(p0, along(paramAtDistance(at, 0, size), p0), size, width, tail));
     t0 = paramAtDistance(at, 0, trim);
   }
   if (endHead) {
-    heads.push(headPath(p2, at(paramAtDistance(at, 1, size)), size));
+    heads.push(headPath(p2, along(paramAtDistance(at, 1, size), p2), size, width, tail));
     t1 = paramAtDistance(at, 1, trim);
   }
   const n = (value: number): string => String(Math.round(value * 100) / 100 + 0);
@@ -119,10 +131,15 @@ function lineSvg(el: Shape, stroke: string, paint: string): string {
     const a = at(t0);
     const b = at(t1);
     if (local) {
-      // The piece of the curve between t0 and t1 is itself a quadratic.
+      // The piece of the curve between t0 and t1 is itself a quadratic. Its
+      // ends are square, to sit inside the heads' tails; an end with no head
+      // gets its round cap back as a dot.
       const c = quadraticBlossom(p0, p1, p2, t0, t1);
       line = `<path d="M ${n(a.x)} ${n(a.y)} Q ${n(c.x)} ${n(c.y)} ${n(b.x)} ${n(b.y)}"`
-        + ` stroke-linecap="round" stroke-linejoin="round" ${paint}/>`;
+        + ` stroke-linejoin="round" ${paint}/>`;
+      const dot = (p: XY): string => `<circle cx="${n(p.x)}" cy="${n(p.y)}" r="${n(el.strokeWidth / 2)}" fill="${stroke}"/>`;
+      if (!startHead) line += dot(a);
+      if (!endHead) line += dot(b);
     } else {
       line = `<line x1="${n(a.x)}" y1="${n(a.y)}" x2="${n(b.x)}" y2="${n(b.y)}" ${paint}/>`;
     }
@@ -130,18 +147,27 @@ function lineSvg(el: Shape, stroke: string, paint: string): string {
   return line + heads.map((d) => `<path class="arrowhead" d="${d}" fill="${stroke}" stroke="none"/>`).join('');
 }
 
-/** A head: tip at `tip`, its base centred `size` back toward `back`, as wide as it is long. */
-function headPath(tip: XY, back: XY, size: number): string {
+/**
+ * A head: tip at `tip`, its base centred `size` back toward `back` and as
+ * wide as it is long, with a `width`-wide tail running `tail` further back
+ * for the line's end to sit in.
+ */
+function headPath(tip: XY, back: XY, size: number, width: number, tail: number): string {
   const dx = tip.x - back.x;
   const dy = tip.y - back.y;
   const length = Math.hypot(dx, dy) || 1;
   const ux = dx / length;
   const uy = dy / length;
-  const base = { x: tip.x - ux * size, y: tip.y - uy * size };
-  const half = size / 2;
   const n = (value: number): string => String(Math.round(value * 100) / 100 + 0);
-  return `M ${n(tip.x)} ${n(tip.y)} L ${n(base.x - uy * half)} ${n(base.y + ux * half)}`
-    + ` L ${n(base.x + uy * half)} ${n(base.y - ux * half)} Z`;
+  // A point `along` back from the tip and `across` to its left (negative: right).
+  const pt = (along: number, across: number): string =>
+    `${n(tip.x - ux * along - uy * across)} ${n(tip.y - uy * along + ux * across)}`;
+  const half = size / 2;
+  const neck = width / 2;
+  const outline = tail > 0 && neck > 0
+    ? [pt(0, 0), pt(size, half), pt(size, neck), pt(size + tail, neck), pt(size + tail, -neck), pt(size, -neck), pt(size, -half)]
+    : [pt(0, 0), pt(size, half), pt(size, -half)];
+  return `M ${outline.join(' L ')} Z`;
 }
 
 function quadraticPoint(p0: XY, p1: XY, p2: XY, t: number): XY {
@@ -149,6 +175,14 @@ function quadraticPoint(p0: XY, p1: XY, p2: XY, t: number): XY {
   return {
     x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
     y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y,
+  };
+}
+
+/** The quadratic's direction of travel at `t` (its derivative, unnormalised). */
+function quadraticTangent(p0: XY, p1: XY, p2: XY, t: number): XY {
+  return {
+    x: 2 * (1 - t) * (p1.x - p0.x) + 2 * t * (p2.x - p1.x),
+    y: 2 * (1 - t) * (p1.y - p0.y) + 2 * t * (p2.y - p1.y),
   };
 }
 
@@ -229,12 +263,12 @@ export function cssGradient(from: string, gradient: NonNullable<Shape['fillGradi
 
 /**
  * The drawn length of a shape's arrowheads in its own units: the authored
- * size, or six stroke widths, and never under three — at three a round line
- * end reaches exactly to the head's tip, and below it shows past the head.
+ * size, or six stroke widths, and never less than one — a head as wide as
+ * its line, the line simply ending in a point. Heads are as wide as long.
  */
 export function arrowHeadSize(el: Pick<Shape, 'arrowSize' | 'strokeWidth'>): number {
   const stroke = Math.max(el.strokeWidth, 0);
-  return Math.max(el.arrowSize ?? stroke * 6, stroke * 3, 1);
+  return Math.max(el.arrowSize ?? stroke * 6, stroke, 1);
 }
 
 function arrowMarker(id: string, color: string, size: number): string {

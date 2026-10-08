@@ -3,8 +3,6 @@ import type { Deck, Slide, SlideElement, TextEl } from '@shared/deck.js';
 import { canHoldText, shapeToTextBox } from '@shared/shapeText.js';
 import { moveCorner, polygonPoints } from '@shared/polygonShape.js';
 import { braceDepthToward, bracePolyline, braceTip } from '@shared/brace.js';
-import { paintedMediaBox } from '@shared/mediaMask.js';
-import { mediaNaturalSize } from './mediaNatural.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 
 type XY = { x: number; y: number };
@@ -614,12 +612,8 @@ type MoveOrigin = Rect & { control?: { x: number; y: number } };
 type ResizeOrigin = Rect & {
   rot: number;
   sourceBox?: Rect | null;
-  /**
-   * Where uncropped, fitted media is painted in its box when the drag began:
-   * the crop a Shift-resize stretches, so the picture squashes from exactly
-   * how it looked. Null when the media fills its box or is already cropped.
-   */
-  painted?: Rect | null;
+  /** Media's `fit` when the drag began, put back if Shift is let go mid-drag. */
+  fit?: 'cover' | 'contain' | 'fill';
   control?: { x: number; y: number } | null;
 };
 
@@ -2384,10 +2378,7 @@ export class EditorCanvas {
             ...((selected.type === 'image' || selected.type === 'video')
               ? {
                 sourceBox: selected.sourceBox ? { ...selected.sourceBox } : null,
-                painted: !selected.sourceBox && selected.fit !== 'fill'
-                  && mediaNaturalSize(selected.id)
-                  ? paintedMediaBox(selected, mediaNaturalSize(selected.id))
-                  : null,
+                fit: selected.fit,
               }
               : {}),
             ...((selected.type === 'shape' && selected.control)
@@ -2771,24 +2762,20 @@ export class EditorCanvas {
           // Resizing a cropped element scales the whole picture with its
           // window, so the crop composition is preserved — without this, a
           // resize silently re-crops instead of scaling.
-          // Shift frees a picture's proportions, and a freed picture squashes
-          // with its box. A fitted one has no crop to squash, so its framing
-          // when the drag began becomes one — the same picture, now stretched
-          // — and goes away again if Shift is let go mid-drag.
-          const crop = (el.type === 'image' || el.type === 'video')
-            ? origin.sourceBox ?? (ev.shiftKey && origin.painted ? origin.painted : null)
-            : null;
-          if ((el.type === 'image' || el.type === 'video') && crop) {
+          if ((el.type === 'image' || el.type === 'video') && origin.sourceBox) {
             const fx = el.w / origin.w;
             const fy = el.h / origin.h;
             el.sourceBox = {
-              x: Math.round(crop.x * fx),
-              y: Math.round(crop.y * fy),
-              w: Math.max(1, Math.round(crop.w * fx)),
-              h: Math.max(1, Math.round(crop.h * fy)),
+              x: Math.round(origin.sourceBox.x * fx),
+              y: Math.round(origin.sourceBox.y * fy),
+              w: Math.max(1, Math.round(origin.sourceBox.w * fx)),
+              h: Math.max(1, Math.round(origin.sourceBox.h * fy)),
             };
-          } else if ((el.type === 'image' || el.type === 'video') && origin.painted) {
-            el.sourceBox = null;
+          } else if ((el.type === 'image' || el.type === 'video') && origin.fit) {
+            // Shift frees a picture's proportions, and a freed picture squashes
+            // with its box: it fills the box exactly, so the box is the picture.
+            // Letting go of Shift mid-drag gives it back the fit it had.
+            el.fit = ev.shiftKey ? 'fill' : origin.fit;
           }
           if (el.type === 'shape' && origin.control) {
             const control = resizePointByScale(origin.control, origin, resized, scaleX, scaleY);

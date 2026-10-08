@@ -94,15 +94,19 @@ describe('arrowheads', () => {
   const arrow = (over: Partial<Shape> = {}) => rect({
     shape: 'arrow', w: 400, h: 2, fill: null, stroke: '#111111', strokeWidth: 4, arrowEnd: true, ...over,
   });
-  /** The drawn head triangles and the line, as numbers. */
+  /** Each drawn head's outline (tip first, then its corners and tail) and the line, as numbers. */
   const parts = (svg: string) => {
-    const heads = [...svg.matchAll(/class="arrowhead" d="M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) Z"/g)]
-      .map((m) => m.slice(1).map(Number));
+    const heads = [...svg.matchAll(/class="arrowhead" d="M ([^"]+) Z"/g)]
+      .map((m) => m[1].split(/ L | /).map(Number));
     const line = /<line x1="([\d.-]+)" y1="[\d.-]+" x2="([\d.-]+)"/.exec(svg)?.slice(1).map(Number) ?? null;
     return { heads, line };
   };
-  /** A head's length: tip to the midpoint of its base. */
-  const length = ([tx, ty, ax, ay, bx, by]: number[]) => Math.hypot(tx - (ax + bx) / 2, ty - (ay + by) / 2);
+  /** A head's length: tip to the midpoint of its base (its first and last corners). */
+  const length = (h: number[]) => {
+    const [tx, ty, ax, ay] = h;
+    const [bx, by] = h.slice(-2);
+    return Math.hypot(tx - (ax + bx) / 2, ty - (ay + by) / 2);
+  };
 
   it('follows the line width by default, as before', () => {
     expect(arrowHeadSize(arrow())).toBe(24);
@@ -115,19 +119,26 @@ describe('arrowheads', () => {
     expect(length(parts(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 40 }))).heads[0])).toBeCloseTo(40, 1);
   });
 
-  it('never draws a head too small to cover the line', () => {
-    expect(arrowHeadSize(arrow({ strokeWidth: 12, arrowSize: 10 }))).toBe(36);
-    expect(length(parts(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 10 }))).heads[0])).toBeCloseTo(36, 1);
+  it('never draws a head narrower than its line: at the floor the line just ends in a point', () => {
+    expect(arrowHeadSize(arrow({ strokeWidth: 12, arrowSize: 4 }))).toBe(12);
+    const { heads, line } = parts(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 4 })));
+    expect(length(heads[0])).toBeCloseTo(12, 1);
+    // The head's widest point is the line's width: nothing sticks out.
+    const ys = heads[0].filter((_, i) => i % 2 === 1);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(12, 1);
+    expect(line![1]).toBeCloseTo(400 - 12 - 1, 1);
   });
 
-  it('puts the tip on the endpoint and stops the line just inside the head, not under it', () => {
+  it('puts the tip on the endpoint and stops the line just behind the head, not under it', () => {
     // A thick line under a small head: the line used to run on to the tip and show past the head.
     const { heads, line } = parts(shapeSvg(arrow({ strokeWidth: 20, arrowSize: 60, arrowStart: true })));
     const [end, start] = [heads.find((h) => h[0] > 200)!, heads.find((h) => h[0] < 200)!];
     expect(end[0]).toBeCloseTo(400, 1);
     expect(start[0]).toBeCloseTo(0, 1);
-    // Overlapping the bases by a fifth of the head: no gap, and nowhere near the tips.
-    expect(line).toEqual([48, 352]);
+    // Into each head's 2px tail, line-wide, so no gap and nothing past the base.
+    expect(line).toEqual([61, 339]);
+    // The tail's back corners: 2px behind the base at 340, exactly the line's 20px wide.
+    expect(end.slice(6, 10)).toEqual([338, 11, 338, -9]);
   });
 
   it("points a curved arrow's head along the curve, its line trimmed along the curve", () => {
@@ -140,7 +151,9 @@ describe('arrowheads', () => {
     // Coming down from the bend, the base is above-left of the tip.
     expect((head[3] + head[5]) / 2).toBeLessThan(head[1]);
     const end = /Q [\d.-]+ [\d.-]+ ([\d.-]+) ([\d.-]+)"/.exec(svg)!.slice(1).map(Number);
-    expect(Math.hypot(400 - end[0], 1 - end[1])).toBeCloseTo(24 * 0.8, 0);
+    expect(Math.hypot(400 - end[0], 1 - end[1])).toBeCloseTo(24 + 1, 0);
+    // The end without a head keeps its round cap.
+    expect(svg).toContain('<circle cx="0" cy="1" r="2"');
   });
 
   it('shares a short line between its heads instead of crossing them', () => {
