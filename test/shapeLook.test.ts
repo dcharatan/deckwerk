@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { shapeSvg } from '../src/shared/shapeSvg.js';
+import { arrowHeadSize, shapeSvg } from '../src/shared/shapeSvg.js';
 import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
 import { elementFromNode, slideToHtml, type MeasuredNode } from '../src/shared/htmlSlides.js';
 import { curvedShadow, setCurvedShadow } from '../src/shared/shapeShadow.js';
@@ -87,5 +87,39 @@ describe('the curl class', () => {
     expect(stage.querySelector('[data-element-id="card"]')?.classList.contains('shadow-curved')).toBe(true);
     applyStaticSlideState(stage, slide, resolveState(slide, 0));
     expect(stage.querySelector('[data-element-id="card"]')?.classList.contains('shadow-curved')).toBe(true);
+  });
+});
+
+describe('arrowhead size', () => {
+  const arrow = (over: Partial<Shape> = {}) => rect({
+    shape: 'arrow', w: 400, h: 2, fill: null, stroke: '#111111', strokeWidth: 4, arrowEnd: true, ...over,
+  });
+  const markerSize = (svg: string) => Number(/markerWidth="([\d.]+)"/.exec(svg)?.[1]);
+
+  it('follows the line width by default, as before', () => {
+    expect(arrowHeadSize(arrow())).toBe(24);
+    expect(markerSize(shapeSvg(arrow()))).toBe(24);
+    expect(shapeSvg(arrow())).toContain('markerUnits="userSpaceOnUse"');
+  });
+
+  it('takes an authored size, so a thick line can keep a modest head', () => {
+    expect(markerSize(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 40 })))).toBe(40);
+  });
+
+  it('never draws a head too small to cover the line', () => {
+    expect(arrowHeadSize(arrow({ strokeWidth: 12, arrowSize: 10 }))).toBe(36);
+    expect(markerSize(shapeSvg(arrow({ strokeWidth: 12, arrowSize: 10 })))).toBe(36);
+  });
+
+  it('round-trips through the authoring HTML, and stays absent when unset', () => {
+    const deck = emptyDeck('Arrows');
+    deck.slides[0].elements = [arrow({ arrowSize: 30 }), arrow({ id: 'plain' })];
+    const html = slideToHtml(deck.slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-arrow-size="30"');
+    expect(html.match(/data-arrow-size/g)).toHaveLength(1);
+    const back = elementFromNode(node({ dataset: { element: 'shape', shape: 'arrow', arrowSize: '30' } }), 'a', 1);
+    expect(back).toMatchObject({ arrowSize: 30 });
+    const bare = elementFromNode(node({ dataset: { element: 'shape', shape: 'arrow' } }), 'b', 1);
+    expect('arrowSize' in bare!).toBe(false);
   });
 });

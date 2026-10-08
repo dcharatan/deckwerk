@@ -237,6 +237,8 @@ export interface CrossSession {
   chord(key: string, code: string, virtualKey: number, modifiers: number,
     commands?: string[]): Promise<void>;
   type(value: string): Promise<void>;
+  /** A real [ or ] key (with Shift: { or }), carrying both its physical code and its character. */
+  stackKey(right: boolean, shift: boolean): Promise<void>;
   state(): Promise<CrossState>;
   /** Invariant violations that survive a short settle window. */
   problems(): Promise<string[]>;
@@ -422,6 +424,20 @@ function buildSession(cdp: Cdp): CrossSession {
     async type(value) {
       await cdp.typeKeys(value);
       await wait(60);
+    },
+    async stackKey(right, shift) {
+      const character = right ? (shift ? '}' : ']') : (shift ? '{' : '[');
+      const key = {
+        key: character,
+        code: right ? 'BracketRight' : 'BracketLeft',
+        windowsVirtualKeyCode: right ? 221 : 219,
+        nativeVirtualKeyCode: right ? 221 : 219,
+        modifiers: shift ? 8 : 0,
+      };
+      await cdp.call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key });
+      await cdp.call('Input.dispatchKeyEvent', { type: 'char', text: character, unmodifiedText: character, ...key });
+      await cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+      await wait(80);
     },
     state() {
       return cdp.evaluate<CrossState>(`(${STATE})()`);

@@ -134,6 +134,7 @@ const ELEMENT_PROPERTIES: Record<SlideElement['type'], PropertyDoc[]> = {
     { path: 'radius', type: 'number >= 0', description: 'Rectangle corner radius.', example: 24 },
     { path: 'arrowStart', type: 'boolean', description: 'Arrowhead at the start of a line.', example: false },
     { path: 'arrowEnd', type: 'boolean', description: 'Arrowhead at the end of a line.', example: true },
+    { path: 'arrowSize', type: 'number > 0', description: 'Arrowhead length in pixels; unset means six stroke widths, and it is never drawn under three.', example: 24 },
     { path: 'control', type: '{x,y}|null', description: 'Canvas-space quadratic curve control point.', example: { x: 600, y: 300 } },
     { path: 'braceDepth', type: 'number', description: 'For braces: signed distance from the chord to the point, along the element\'s own +y; half of it is the curl radius.', example: 40 },
     { path: 'path', type: 'SVG path|null', description: 'SVG path data for path shapes.', example: 'M0 0 L100 100' },

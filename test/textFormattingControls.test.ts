@@ -330,13 +330,19 @@ describe('text formatting from the inspector controls', () => {
     type(picker.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!, '#3366cc');
     expect(textOf(store, 'text-1').style.color).toBe('#3366cc');
 
-    // Dragging the opacity slider previews live and commits when released.
+    // Dragging the opacity slider applies every step as it goes, and the
+    // whole drag is one undo step.
     const opacity = picker.querySelector<HTMLInputElement>('input[aria-label="Opacity"]')!;
+    opacity.value = '70';
+    opacity.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(textOf(store, 'text-1').style.color).toBe('rgba(51, 102, 204, 0.7)');
     opacity.value = '50';
     opacity.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(textOf(store, 'text-1').style.color).toBe('#3366cc');
+    expect(textOf(store, 'text-1').style.color).toBe('rgba(51, 102, 204, 0.5)');
     opacity.dispatchEvent(new Event('change', { bubbles: true }));
     expect(textOf(store, 'text-1').style.color).toBe('rgba(51, 102, 204, 0.5)');
+    store.undo();
+    expect(textOf(store, 'text-1').style.color).toBe('#3366cc');
   });
 
   it('turns paragraphs into a bulleted list and back from the list dropdown', () => {

@@ -1353,6 +1353,8 @@ export function elementFromNode(
       pathSize: pw > 0 && ph > 0 ? { w: pw, h: ph } : null,
       arrowStart: node.dataset.arrowStart === 'true',
       arrowEnd: node.dataset.arrowEnd === 'true',
+      ...(Number.parseFloat(node.dataset.arrowSize ?? '') > 0
+        ? { arrowSize: Number.parseFloat(node.dataset.arrowSize ?? '') } : {}),
       ...(node.dataset.control ? { control: { x: cx, y: cy } } : {}),
       ...(Number.isFinite(Number.parseFloat(node.dataset.braceDepth ?? ''))
         ? { braceDepth: Number.parseFloat(node.dataset.braceDepth ?? '') } : {}),
@@ -1673,6 +1675,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry, base?: stri
         + ` data-stroke-width="${element.strokeWidth}" data-radius="${element.radius}"`
         + (element.arrowStart ? ' data-arrow-start="true"' : '')
         + (element.arrowEnd ? ' data-arrow-end="true"' : '')
+        + (element.arrowSize !== undefined ? ` data-arrow-size="${element.arrowSize}"` : '')
         + (element.control ? ` data-control="${element.control.x},${element.control.y}"` : '')
         + (element.braceDepth !== undefined ? ` data-brace-depth="${element.braceDepth}"` : '')
         + attr('data-path', element.path)

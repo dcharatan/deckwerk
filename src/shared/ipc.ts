@@ -16,6 +16,7 @@ export const IPC = {
   deckSave: 'deck:save',
   deckSyncSnapshot: 'deck:syncSnapshot',
   deckSaveAs: 'deck:saveAs',
+  windowCapture: 'window:capture',
   deckHistoryLoad: 'deckHistory:load',
   deckHistorySave: 'deckHistory:save',
   deckLoadTheme: 'deck:loadTheme',

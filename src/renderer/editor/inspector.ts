@@ -25,11 +25,13 @@ import {
   deckTheme,
   deckThemes,
   followThemeOnText,
+  newObjectColors,
   textOverrides,
   themeById,
   type ThemeTextRole,
 } from '@shared/themes.js';
-import { colorField, colorForInput } from './colorPicker.js';
+import { ARRANGE_LABELS, arrangeSelection } from './arrange.js';
+import { COLOR_LIVE_END, COLOR_LIVE_START, colorField, colorForInput } from './colorPicker.js';
 import { setCircularMask } from '@shared/mediaMask.js';
 import {
   hasTextBox,
@@ -227,6 +229,20 @@ export class Inspector {
     this.host = host;
     this.host.classList.add('editor-inspector');
     this.store = store;
+    // A drag in any colour picker of this panel is one edit, applied live.
+    this.host.dataset.colorLive = '';
+    this.host.addEventListener(COLOR_LIVE_START, (event) => {
+      if (this.continuousEdit) return;
+      event.preventDefault();
+      this.continuousEdit = true;
+      this.store.beginTransaction('Change colour');
+    });
+    this.host.addEventListener(COLOR_LIVE_END, () => {
+      if (!this.continuousEdit) return;
+      this.store.endTransaction();
+      this.continuousEdit = false;
+      this.render();
+    });
     this.morphHost.className = 'morph-section';
     this.morphPanel = new MorphPanel(this.morphHost, store, false);
     // Only re-render when the deck, selection or slide actually changed. The
@@ -828,10 +844,10 @@ export class Inspector {
     const order = document.createElement('div');
     order.className = 'align-strip z-order-row';
     for (const [dir, title] of [
-      ['front', 'Bring to front'],
-      ['forward', 'Bring forward'],
-      ['backward', 'Send backward'],
-      ['back', 'Send to back'],
+      ['front', `${ARRANGE_LABELS.front} (Shift+])`],
+      ['forward', `${ARRANGE_LABELS.forward} (])`],
+      ['backward', `${ARRANGE_LABELS.backward} ([)`],
+      ['back', `${ARRANGE_LABELS.back} (Shift+[)`],
     ] as const) {
       const b = document.createElement('button');
       b.type = 'button';
@@ -839,7 +855,7 @@ export class Inspector {
       b.title = title;
       b.setAttribute('aria-label', title);
       b.appendChild(inlineGlyph(ARRANGE_GLYPHS[dir]));
-      b.addEventListener('click', () => this.reorder(dir));
+      b.addEventListener('click', () => arrangeSelection(this.store, dir));
       order.appendChild(b);
     }
     arrange.append(arrangeLabel, order);
@@ -891,43 +907,62 @@ export class Inspector {
     return geometry.section;
   }
 
-  private reorder(dir: 'front' | 'forward' | 'backward' | 'back'): void {
-    const slide = this.store.slide;
-    if (!slide) return;
-    const zs = slide.elements.map((e) => e.z);
-    const min = Math.min(...zs, 0);
-    const max = Math.max(...zs, 0);
-    this.store.updateSelected((el) => {
-      if (dir === 'front') el.z = max + 1;
-      else if (dir === 'back') el.z = min - 1;
-      else if (dir === 'forward') el.z += 1;
-      else el.z -= 1;
-    });
+
+  /**
+   * Arrowhead size: blank follows the line's width (six stroke widths), a
+   * number fixes the head's length so a thick line can keep a modest head.
+   * A size too small for the line is kept as typed but drawn at the floor
+   * (`arrowHeadSize`), so thickening the line later never buries its head.
+   */
+  private arrowSizeRow(shapes: Array<Extract<SlideElement, { type: 'shape' }>>): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'compact-field-row';
+    const authored = commonValue(shapes.map((shape) => shape.arrowSize ?? null));
+    row.appendChild(numberField('HEAD SIZE', authored, (value) =>
+      this.store.updateSelected((element) => {
+        if (element.type === 'shape') element.arrowSize = Math.max(1, Math.min(1000, value));
+      }, { label: 'Change arrowhead size' }), {
+      unit: 'px',
+      placeholder: 'Auto',
+      onClear: () => this.store.updateSelected((element) => {
+        if (element.type === 'shape') delete element.arrowSize;
+      }, { label: 'Automatic arrowhead size' }),
+    }));
+    return row;
   }
 
   /** Shared, safe style controls for a same-kind shape multi-selection. */
   /**
-   * A shape's fill as a gradient: Solid, Linear or Radial, then the colour it
-   * runs to and, for a linear one, its direction on the same knob as a
-   * shadow's. The gradient runs from the Fill colour above.
+   * A shape's fill style: None (transparent), Solid, Linear or Radial, then
+   * for a gradient the colour it runs to and, for a linear one, its direction
+   * on the same knob as a shadow's. A gradient runs from the Fill colour above.
    */
   private gradientFields(shapes: Array<Extract<SlideElement, { type: 'shape' }>>): HTMLElement {
     const box = document.createElement('div');
     box.className = 'gradient-fields';
     const styleOf = (shape: (typeof shapes)[number]): string =>
-      !shape.fillGradient ? 'Solid' : shape.fillGradient.kind === 'radial' ? 'Radial gradient' : 'Linear gradient';
+      !shape.fill ? 'None'
+        : !shape.fillGradient ? 'Solid'
+          : shape.fillGradient.kind === 'radial' ? 'Radial gradient' : 'Linear gradient';
     const style = commonValue(shapes.map(styleOf)) ?? 'Solid';
-    box.appendChild(selectField('Fill style', ['Solid', 'Linear gradient', 'Radial gradient'], style, (value) =>
+    // Leaving None needs a colour to fill with: the theme's, as for a new shape.
+    const fillColour = (): string => newObjectColors(this.store.get().deck).fill;
+    box.appendChild(selectField('Fill style', ['None', 'Solid', 'Linear gradient', 'Radial gradient'], style, (value) =>
       this.store.updateSelected((element) => {
         if (element.type !== 'shape') return;
+        if (value === 'None') {
+          element.fill = null;
+          element.fillGradient = null;
+          return;
+        }
+        if (!element.fill) element.fill = fillColour();
         if (value === 'Solid') { element.fillGradient = null; return; }
-        if (!element.fill) element.fill = '#7b90e1';
         element.fillGradient = {
           to: element.fillGradient?.to ?? '#ec6b14',
           angle: element.fillGradient?.angle ?? 270,
           kind: value === 'Radial gradient' ? 'radial' : 'linear',
         };
-      }, { label: value === 'Solid' ? 'Solid fill' : 'Gradient fill' })));
+      }, { label: value === 'None' ? 'No fill' : value === 'Solid' ? 'Solid fill' : 'Gradient fill' })));
     const gradients = shapes.map((shape) => shape.fillGradient).filter((g): g is NonNullable<typeof g> => Boolean(g));
     if (gradients.length === 0) return box;
     const change = (apply: (gradient: NonNullable<(typeof shapes)[number]['fillGradient']>) => void, label: string): void =>
@@ -1225,6 +1260,9 @@ export class Inspector {
             : null;
         }),
       ));
+      if (shapes.some((shape) => shape.arrowStart || shape.arrowEnd || shape.shape === 'arrow')) {
+        wrap.appendChild(this.arrowSizeRow(shapes));
+      }
     } else {
       wrap.appendChild(colorField(
         'Fill',
@@ -2335,6 +2373,9 @@ export class Inspector {
             ),
           );
           style.content.appendChild(flags);
+          if (el.arrowStart || el.arrowEnd || el.shape === 'arrow') {
+            style.content.appendChild(this.arrowSizeRow([el]));
+          }
         }
         wrap.appendChild(style.section);
         wrap.appendChild(this.shadowSection([el], 'shape'));
@@ -2831,7 +2872,13 @@ export function numberField(
   label: string,
   value: number | null,
   onChange: (v: number) => void,
-  opts: { step?: number; unit?: string } = {},
+  opts: {
+    step?: number;
+    unit?: string;
+    /** Clearing the field calls this instead of reporting 0; shown as the placeholder. */
+    onClear?: () => void;
+    placeholder?: string;
+  } = {},
 ): HTMLElement {
   const wrap = document.createElement('label');
   wrap.className = 'field field-number';
@@ -2841,10 +2888,14 @@ export function numberField(
   input.type = 'number';
   input.step = String(opts.step ?? 1);
   input.value = value === null ? '' : String(round(value));
-  input.placeholder = value === null ? '—' : '';
+  input.placeholder = value === null ? opts.placeholder ?? '—' : '';
   // `change`, not `input`: committing on every keystroke would flood undo and
   // fight you mid-typing.
   input.addEventListener('change', () => {
+    if (opts.onClear && input.value.trim() === '') {
+      opts.onClear();
+      return;
+    }
     const v = Number(input.value);
     if (Number.isFinite(v)) onChange(v);
   });

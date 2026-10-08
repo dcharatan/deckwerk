@@ -3823,3 +3823,118 @@ describe('pointer-ups on chrome laid over the canvas', () => {
     expect(store.isTransactionActive()).toBe(false);
   });
 });
+
+describe('resizing pictures and videos', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  /** Drag `id`'s south-east handle by (dx, dy) on a 1:1 stage. */
+  function dragCorner(id: string, dx: number, dy: number, shiftKey = false) {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].elements.push(imageElement());
+      // A cropped video: free to resize before, which surprised people.
+      const video = deck.slides[0].elements.find((e) => e.id === 'video-1');
+      if (video?.type === 'video') video.sourceBox = { x: -20, y: -10, w: 680, h: 380 };
+    });
+    host.querySelector<HTMLElement>('.stage')!.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    store.select([id]);
+    const el = store.slide!.elements.find((e) => e.id === id)!;
+    const start = { x: el.x + el.w, y: el.y + el.h };
+    const handle = host.querySelector<HTMLElement>(`.handle-se[data-element-id="${id}"]`)!;
+    const event = (type: string, x: number, y: number) => new PointerEvent(type, {
+      clientX: x, clientY: y, bubbles: true, pointerId: 1, button: 0, shiftKey,
+    });
+    handle.dispatchEvent(event('pointerdown', start.x, start.y));
+    host.dispatchEvent(event('pointermove', start.x + dx, start.y + dy));
+    host.dispatchEvent(event('pointerup', start.x + dx, start.y + dy));
+    return store.slide!.elements.find((e) => e.id === id)!;
+  }
+
+  it('keeps a video in proportion by default, even a cropped one, and frees it with Shift', () => {
+    expect(dragCorner('video-1', 160, 20)).toMatchObject({ w: 800, h: 450 });
+    expect(dragCorner('video-1', 160, 20, true)).toMatchObject({ w: 800, h: 380 });
+  });
+
+  it('keeps a picture in proportion by default and frees it with Shift', () => {
+    expect(dragCorner('image-1', 200, 10)).toMatchObject({ w: 600, h: 450 });
+    expect(dragCorner('image-1', 200, 10, true)).toMatchObject({ w: 600, h: 310 });
+  });
+
+  it('still resizes a text box freely, with Shift to keep its proportions', () => {
+    expect(dragCorner('text-1', 200, 60)).toMatchObject({ w: 800, h: 180 });
+    expect(dragCorner('text-1', 200, 60, true)).toMatchObject({ w: 800, h: 160 });
+  });
+});
+
+describe('stacking order keys', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  const press = (code: 'BracketLeft' | 'BracketRight', shiftKey = false) => document.body.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      code, key: code === 'BracketLeft' ? (shiftKey ? '{' : '[') : (shiftKey ? '}' : ']'),
+      shiftKey, bubbles: true, cancelable: true,
+    }),
+  );
+  /** Ids bottom to top. */
+  const stack = (store: ReturnType<typeof setup>['store']) => [...store.slide!.elements]
+    .sort((a, b) => a.z - b.z).map((e) => e.id);
+
+  it('steps with [ and ], goes to the back and front with Shift, each one undo step', () => {
+    const { store } = setup();
+    store.commit((deck) => deck.slides[0].elements.push(imageElement()));
+    bindEditorKeys(shellDeps(store), noopClipboard());
+    expect(stack(store)).toEqual(['text-1', 'video-1', 'image-1']);
+    store.select(['text-1']);
+
+    press('BracketRight');
+    expect(stack(store)).toEqual(['video-1', 'text-1', 'image-1']);
+    expect(store.history()[0]?.label).toBe('Bring forward');
+    press('BracketRight', true);
+    expect(stack(store)).toEqual(['video-1', 'image-1', 'text-1']);
+    press('BracketLeft');
+    expect(stack(store)).toEqual(['video-1', 'text-1', 'image-1']);
+    press('BracketLeft', true);
+    expect(stack(store)).toEqual(['text-1', 'video-1', 'image-1']);
+    store.undo();
+    expect(stack(store)).toEqual(['video-1', 'text-1', 'image-1']);
+  });
+
+  it('leaves brackets alone while typing into a field', () => {
+    const { store } = setup();
+    bindEditorKeys(shellDeps(store), noopClipboard());
+    store.select(['text-1']);
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'BracketRight', key: ']', bubbles: true, cancelable: true }));
+    expect(stack(store)).toEqual(['text-1', 'video-1']);
+  });
+});
+
+describe('shape fill style', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('offers None, which clears the fill, and Solid brings back a theme colour', () => {
+    const { store } = setup();
+    const shape = insertShape(store, 'rect');
+    const panel = document.createElement('div');
+    document.body.appendChild(panel);
+    new Inspector(panel, store).render();
+    const style = () => [...panel.querySelectorAll<HTMLLabelElement>('label.field')]
+      .find((field) => field.querySelector('span')?.textContent === 'Fill style')!
+      .querySelector('select')!;
+    const current = () => store.slide!.elements.find((e) => e.id === shape.id) as Extract<SlideElement, { type: 'shape' }>;
+    expect([...style().options].map((o) => o.value)).toEqual(['None', 'Solid', 'Linear gradient', 'Radial gradient']);
+    expect(style().value).toBe('Solid');
+
+    style().value = 'None';
+    style().dispatchEvent(new Event('change'));
+    expect(current().fill).toBeNull();
+    expect(current().fillGradient ?? null).toBeNull();
+    expect(style().value).toBe('None');
+
+    style().value = 'Solid';
+    style().dispatchEvent(new Event('change'));
+    expect(current().fill).toBe(shape.fill);
+  });
+});

@@ -43,7 +43,7 @@ export function shapeSvg(el: Shape): string {
     case 'line':
     case 'arrow': {
       const heads = el.shape === 'arrow' || el.arrowEnd || el.arrowStart;
-      if (heads) defs = arrowMarker(markerId, stroke);
+      if (heads) defs = arrowMarker(markerId, stroke, arrowHeadSize(el));
       const markers = (el.arrowStart ? ` marker-start="url(#${markerId})"` : '')
         + (el.arrowEnd || (!el.arrowStart && el.shape === 'arrow')
           ? ` marker-end="url(#${markerId})"` : '');
@@ -58,7 +58,7 @@ export function shapeSvg(el: Shape): string {
         + ` stroke-linejoin="round" ${paint}/>`;
       break;
     case 'path': {
-      if (el.arrowEnd || el.arrowStart) defs = arrowMarker(markerId, stroke);
+      if (el.arrowEnd || el.arrowStart) defs = arrowMarker(markerId, stroke, arrowHeadSize(el));
       const markers = (el.arrowStart ? ` marker-start="url(#${markerId})"` : '')
         + (el.arrowEnd ? ` marker-end="url(#${markerId})"` : '');
       node = `<path d="${escapeAttr(el.path ?? '')}" stroke-linecap="round"`
@@ -119,8 +119,19 @@ export function cssGradient(from: string, gradient: NonNullable<Shape['fillGradi
   return `linear-gradient(${angle}deg, ${from}, ${gradient.to})`;
 }
 
-function arrowMarker(id: string, color: string): string {
-  return `<defs><marker id="${id}" markerWidth="6" markerHeight="6" refX="5" refY="3"`
+/**
+ * The drawn length of a shape's arrowheads in its own units: the authored
+ * size, or six stroke widths, and never under three — at three a round line
+ * end reaches exactly to the head's tip, and below it shows past the head.
+ */
+export function arrowHeadSize(el: Pick<Shape, 'arrowSize' | 'strokeWidth'>): number {
+  const stroke = Math.max(el.strokeWidth, 0);
+  return Math.max(el.arrowSize ?? stroke * 6, stroke * 3, 1);
+}
+
+function arrowMarker(id: string, color: string, size: number): string {
+  return `<defs><marker id="${id}" markerUnits="userSpaceOnUse" viewBox="0 0 6 6"`
+    + ` markerWidth="${size}" markerHeight="${size}" refX="5" refY="3"`
     + ` orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="${color}"/></marker></defs>`;
 }
 

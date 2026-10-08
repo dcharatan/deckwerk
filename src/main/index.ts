@@ -748,6 +748,16 @@ function registerHandlers(): void {
     },
   );
 
+  // A still of the asking window, for the colour picker's eyedropper: Electron
+  // has no EyeDropper, so the renderer samples (and magnifies) this instead.
+  ipcMain.handle(IPC.windowCapture, async (event): Promise<string | null> => {
+    try {
+      return (await event.sender.capturePage()).toDataURL();
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle(IPC.deckSaveAs, async (event, operationId?: string): Promise<DeckSession | null> => {
     const s = requireSession(event);
     const target = await showSaveDialog({

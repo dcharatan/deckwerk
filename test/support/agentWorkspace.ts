@@ -211,6 +211,8 @@ export function agentFixtureDeck(): Deck {
           { id: 'details-curve', type: 'shape', shape: 'line', x: 120, y: 800, w: 600, h: 4, control: null, stroke: '#333333' },
           // A rotated brace pointing to its own −y: its depth rides on a data attribute.
           { id: 'details-brace', type: 'shape', shape: 'brace', x: 1200, y: 990, w: 500, h: 2, rot: 30, braceDepth: -50, stroke: '#333333' },
+          // A thick arrow with a head smaller than its width would give it.
+          { id: 'details-arrow', type: 'shape', shape: 'arrow', x: 120, y: 1000, w: 500, h: 2, strokeWidth: 10, arrowEnd: true, arrowSize: 36, stroke: '#333333' },
           {
             id: 'details-region', type: 'html', x: 800, y: 760, w: 300, h: 200,
             // As a browser serialises it, which is how the compile stores it.

@@ -1,6 +1,7 @@
 import type { SlideElement } from '@shared/deck.js';
 import { elementFollowsLayout, layoutGeometryFor, realignElementToLayout } from '@shared/layoutMasters.js';
 import { EditorCanvas } from './canvas.js';
+import { ARRANGE_LABELS, arrangeSelection } from './arrange.js';
 import { setCircularMask } from '@shared/mediaMask.js';
 import { classifyMediaName } from '@shared/media.js';
 import { mediaNaturalSize } from './mediaNatural.js';
@@ -369,6 +370,16 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       }
       return;
     }
+    // Stacking order, as in Keynote and Figma: [ and ] step the selection
+    // backward and forward, with Shift all the way to the back and front.
+    // By physical key, so Shift's "{"/"}" and other layouts read the same.
+    if (!mod && !e.altKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+      if (store.get().selection.size === 0) return;
+      e.preventDefault();
+      const up = e.code === 'BracketRight';
+      arrangeSelection(store, e.shiftKey ? (up ? 'front' : 'back') : (up ? 'forward' : 'backward'));
+      return;
+    }
     if (mod && e.key.toLowerCase() === 'a') {
       // Chromium's own select-all reaches for the whole document: it lit up
       // toolbar labels, panel headings and rail captions as a text selection,
@@ -468,8 +479,10 @@ export function makeContextActions(
           label: (el.comments?.length ?? 0) > 0 ? 'Comments…' : 'Add comment…',
           action: () => canvas.openElementComments(el.id),
         },
-        { label: 'Bring to front', action: () => store.updateSelected((e) => (e.z += 1000)) },
-        { label: 'Send to back', action: () => store.updateSelected((e) => (e.z -= 1000)) },
+        { label: ARRANGE_LABELS.front, action: () => arrangeSelection(store, 'front') },
+        { label: ARRANGE_LABELS.forward, action: () => arrangeSelection(store, 'forward') },
+        { label: ARRANGE_LABELS.backward, action: () => arrangeSelection(store, 'backward') },
+        { label: ARRANGE_LABELS.back, action: () => arrangeSelection(store, 'back') },
       );
       if (el.type === 'text' && store.slide
         && layoutGeometryFor(store.slide, el, store.get().deck.layoutMasters)

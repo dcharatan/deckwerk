@@ -61,6 +61,8 @@ ipcRenderer.on(IPC.deckKey, (_e, key: string) => {
  * nodeIntegration is off, so this surface is deliberately small and explicit.
  */
 const api = {
+  /** A PNG data URL of this window as it looks now; null if it could not be read. */
+  captureWindow: (): Promise<string | null> => ipcRenderer.invoke(IPC.windowCapture),
   /**
    * Null when the author cancelled, and also when the deck opened in a window
    * of its own because this window already held a presentation. Either way

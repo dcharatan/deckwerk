@@ -2681,15 +2681,14 @@ export class EditorCanvas {
           if (edges.bottom) rect.h = o.h + dy;
         }
 
-        // Shift constrains, and so does "Keep aspect ratio" on media — with it
-        // off (fit: fill) a resize genuinely stretches the picture.
-        const keepAspect =
-          (resizing?.type === 'image' || resizing?.type === 'video') &&
-          // A circular mask is square by construction; a free resize would
-          // stretch it back into the ellipse this is meant to avoid.
-          (resizing.maskShape === 'circle' ||
-            (resizing.fit !== 'fill' && !resizing.sourceBox));
-        const constrained = ev.shiftKey || keepAspect;
+        // Pictures and videos keep their proportions unless Shift is held, the
+        // way Keynote and Figma resize media; everything else resizes freely
+        // unless Shift is held. A circular mask is square by construction, so
+        // it never frees: a free resize would stretch it back into an ellipse.
+        const media = resizing?.type === 'image' || resizing?.type === 'video';
+        const constrained = media
+          ? resizing.maskShape === 'circle' || !ev.shiftKey
+          : ev.shiftKey;
         if (constrained) rect = constrainAspect(rect, o, edges, drag.aspect);
 
         // Guides align to what is on screen, which for a rotated neighbour is

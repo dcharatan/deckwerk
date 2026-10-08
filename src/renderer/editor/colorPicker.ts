@@ -1,4 +1,5 @@
 import { closePopover, openAnchoredPopover } from './ui.js';
+import { eyedropperAvailable, pickScreenColor } from './eyedropper.js';
 
 interface RgbaColor {
   r: number;
@@ -23,6 +24,19 @@ export interface ColorFieldOptions {
   /** The selected targets currently have different authored colours. */
   mixed?: boolean;
 }
+
+/**
+ * Fired (cancelable) on the nearest `[data-color-live]` ancestor of a colour
+ * field when a drag in its picker begins, and `COLOR_LIVE_END` when it ends.
+ * A host that cancels the start event has opened something that folds a
+ * stream of changes into one edit — the inspector's undo transaction — and
+ * the picker then reports every step of the drag, so the colour updates
+ * under the pointer. Without such a host, one change lands when the drag
+ * ends, as before. The host is found when the picker opens: the host may
+ * rebuild the field itself between drags while the picker stays open.
+ */
+export const COLOR_LIVE_START = 'deckwerk-color-live-start';
+export const COLOR_LIVE_END = 'deckwerk-color-live-end';
 
 const clamp = (value: number, min = 0, max = 1): number =>
   Math.max(min, Math.min(max, value));
@@ -186,6 +200,7 @@ export function colorField(
   }
 
   trigger.addEventListener('click', () => {
+    const liveHost = trigger.closest<HTMLElement>('[data-color-live]');
     let current = { ...initial };
     let hsv = rgbToHsv(current);
     let currentIsTheme = source?.kind === 'theme';
@@ -303,6 +318,29 @@ export function colorField(
     hexInput.setAttribute('aria-label', 'Hex color');
     hexLabel.append(hexTitle, hexInput);
     values.appendChild(hexLabel);
+    if (eyedropperAvailable()) {
+      const dropper = document.createElement('button');
+      dropper.type = 'button';
+      dropper.className = 'color-picker-eyedropper';
+      dropper.title = 'Pick a colour from the screen';
+      dropper.setAttribute('aria-label', 'Pick a colour from the screen');
+      dropper.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" '
+        + 'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        + '<path d="M10.5 2.5a1.8 1.8 0 0 1 2.6 2.6L11.5 6.7l-2.2-2.2z"/>'
+        + '<path d="M9.3 4.5 11.5 6.7l-6.3 6.3-2.4.5.5-2.4z"/></svg>';
+      dropper.addEventListener('click', async () => {
+        const picked = parseCssColor(await pickScreenColor(popover));
+        if (!picked || !popover.isConnected) return;
+        // The picked pixel's colour, at the opacity the picker already had.
+        current = { ...picked, a: current.a };
+        hsv = rgbToHsv(current);
+        currentIsTheme = false;
+        paint();
+        commit();
+      });
+      values.classList.add('has-eyedropper');
+      values.appendChild(dropper);
+    }
 
     const clearButton = document.createElement('button');
     clearButton.type = 'button';
@@ -316,6 +354,26 @@ export function colorField(
     const commit = () => {
       previewStyle(preview, current);
       onChange(colorToCss(current));
+    };
+    // A drag (the plane, or a slider) is one live session: every step is
+    // reported while it lasts when the host folds them into one edit.
+    let live: 'off' | 'live' | 'deferred' = 'off';
+    const beginLive = () => {
+      if (live !== 'off') return;
+      const start = new CustomEvent(COLOR_LIVE_START, { cancelable: true });
+      liveHost?.dispatchEvent(start);
+      live = start.defaultPrevented ? 'live' : 'deferred';
+    };
+    const step = () => {
+      if (live === 'live') commit();
+    };
+    const endLive = () => {
+      if (live === 'off') return;
+      // The last step is committed inside the session either way.
+      commit();
+      const wasLive = live === 'live';
+      live = 'off';
+      if (wasLive) liveHost?.dispatchEvent(new CustomEvent(COLOR_LIVE_END));
     };
     const paint = () => {
       current = hsvToRgb(hsv, current.a);
@@ -348,17 +406,21 @@ export function colorField(
     plane.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       plane.setPointerCapture?.(event.pointerId);
+      beginLive();
       updatePlane(event.clientX, event.clientY);
+      step();
     });
     plane.addEventListener('pointermove', (event) => {
       if (!plane.hasPointerCapture?.(event.pointerId)) return;
       updatePlane(event.clientX, event.clientY);
+      step();
     });
     plane.addEventListener('pointerup', (event) => {
       if (plane.hasPointerCapture?.(event.pointerId)) plane.releasePointerCapture?.(event.pointerId);
       updatePlane(event.clientX, event.clientY);
-      commit();
+      endLive();
     });
+    plane.addEventListener('lostpointercapture', endLive);
     plane.addEventListener('keydown', (event) => {
       const step = event.shiftKey ? 0.1 : 0.01;
       if (event.key === 'ArrowLeft') hsv.s = clamp(hsv.s - step);
@@ -372,17 +434,21 @@ export function colorField(
       commit();
     });
     hue.addEventListener('input', () => {
+      beginLive();
       hsv.h = Number(hue.value);
       currentIsTheme = false;
       paint();
+      step();
     });
-    hue.addEventListener('change', commit);
+    hue.addEventListener('change', endLive);
     opacity.addEventListener('input', () => {
+      beginLive();
       current.a = Number(opacity.value) / 100;
       currentIsTheme = false;
       paint();
+      step();
     });
-    opacity.addEventListener('change', commit);
+    opacity.addEventListener('change', endLive);
     hexInput.addEventListener('change', () => {
       const parsed = parseCssColor(hexInput.value);
       if (!parsed) {

@@ -140,7 +140,7 @@ type OpName =
   | 'click' | 'shift-click' | 'double-click text' | 'double-click image then text'
   | 'type nonce' | 'bold mid-word' | 'escape' | 'click empty' | 'marquee'
   | 'rail hop' | 'undo' | 'redo' | 'undo round-trip' | 'delete selection'
-  | 'cmd+a' | 'click with stray hover' | 'rail multi-delete';
+  | 'cmd+a' | 'click with stray hover' | 'rail multi-delete' | 'stack key';
 
 interface Violation { seed: number; step: number; op: OpName; oracle: string; detail: string }
 
@@ -392,6 +392,7 @@ function chooseOp(next: () => number, pre: CrossState): OpName {
   if (pre.editing === null && pre.selection.length > 0) add('delete selection', 2);
   add('cmd+a', 1);
   add('rail multi-delete', 1);
+  add('stack key', 1);
   return pick(next, ops);
 }
 
@@ -545,6 +546,18 @@ async function performOp(
       }
       const expected = (await session.allElementIds());
       return expected;
+    }
+    case 'stack key': {
+      // [ ] restack the selection, but inside a text edit they are text: the
+      // character goes into the box and nothing moves in the stack.
+      const stacking = () => session.cdp.evaluate<string>(`JSON.stringify(window.store.slide.elements.map((e) => [e.id, e.z]))`);
+      const before = await stacking();
+      await session.stackKey(next() < 0.5, next() < 0.5);
+      if (pre.editing !== null) {
+        const after = await stacking();
+        if (after !== before) flag('routing', `a bracket typed into ${pre.editing} restacked the slide: ${before} -> ${after}`);
+      }
+      return 'same';
     }
     case 'cmd+a':
       await session.chord('a', 'KeyA', 65, MOD, pre.editing !== null ? ['selectAll'] : undefined);

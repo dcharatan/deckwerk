@@ -28,7 +28,7 @@ const BOX_PADDING = '12px 20px';
 export function shapeToTextBox(shape: ShapeEl): TextEl {
   const {
     type: _type, shape: kind, fill, fillGradient, stroke, strokeWidth, radius,
-    path: _path, pathSize: _pathSize, arrowStart: _arrowStart, arrowEnd: _arrowEnd,
+    path: _path, pathSize: _pathSize, arrowStart: _arrowStart, arrowEnd: _arrowEnd, arrowSize: _arrowSize,
     control: _control, braceDepth: _braceDepth,
     ...base
   } = shape;
