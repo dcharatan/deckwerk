@@ -330,11 +330,20 @@ function buildSession(cdp: Cdp, startingSlides: unknown[]): CrossSession {
         await wait(80);
       }
       await cdp.evaluate(`(() => {
-        // The whole slide list, not just the elements: a walk may have
-        // confirmed deleting both slides and then redone that after its undo,
-        // which legitimately leaves one blank slide with a new id.
         window.store.commit((deck) => {
-          deck.slides = ${JSON.stringify(startingSlides)};
+          const starting = ${JSON.stringify(startingSlides)};
+          // A walk may have confirmed deleting both slides and then redone
+          // that after its undo, which legitimately leaves one blank slide
+          // with a new id: then the slide list itself is rebuilt. Otherwise
+          // only the fixture slides' objects are, so a suite that added
+          // slides of its own keeps them.
+          if (starting.some((slide) => !deck.slides.some((s) => s.id === slide.id))) {
+            deck.slides = starting;
+            return;
+          }
+          for (const slide of starting) {
+            deck.slides.find((s) => s.id === slide.id).elements = slide.elements;
+          }
         }, { label: 'Cross-context fixture' });
         window.store.selectSlide(0);
         window.store.clearSelection();

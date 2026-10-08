@@ -507,7 +507,10 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
      * keystroke after the shortcut used to arrive twice ("not" as "nnoott").
      */
     await editor.click(`#canvas [data-element-id="${listTextId}"]`, 'text box for re-entry');
-    await editor.doubleClickTextAtOffset(listContent, 1, 'text for re-entry');
+    // A word mid-paragraph: a new text box is centred and grows about its
+    // centre as it is sized to its text, so this long line's first letters
+    // can sit under the slide rail, where a double-click would land on it.
+    await editor.doubleClickTextAtOffset(listContent, listParagraph.indexOf('italic') + 1, 'text for re-entry');
     await eventually(async () => editor!.evaluate<boolean>(
       `document.querySelector(${JSON.stringify(listContent)})?.isContentEditable === true`,
     ), 're-entry fixture did not enter text editing');
